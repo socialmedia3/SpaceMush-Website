@@ -2203,6 +2203,11 @@ function renderAdminAnalytics(){
 // ============================================================
 // PAGE NAVIGATION
 // ============================================================
+function showFeedPost(postId){
+  var post=document.querySelector('[data-post-id="'+postId+'"]');
+  if(post) post.scrollIntoView({behavior:'smooth', block:'start'});
+}
+
 function showPage(page){
   currentPage=page;
   const feed=document.getElementById('feed');

@@ -461,10 +461,6 @@ const CONTENT_POSTS = {
       },
       {
         "type": "html",
-        "html": "<div class=\"info-slide-icon\">📍</div>\n      <div class=\"info-slide-heading\">Visit Our Office</div>\n      <div class=\"info-slide-body\">\n        <p><strong>55, A3 Swati Sahana Apartments</strong><br>2nd Floor, KB Dasan Road<br>Alwarpet, Chennai – 600018</p>\n        <p>Corner building on KB Dasan Road. From SIET College Road, it's on your LEFT. From TTK Road, it is on your RIGHT.</p>\n        <p>Ground floor identifiers: <strong>Dakshin Art Gallery</strong> and <strong>Dental Clinic</strong>. SpaceMush is on the 2nd Floor.</p>\n        <button class=\"info-slide-btn\" onclick=\"window.open('https://maps.app.goo.gl/myANNorCUc2HB3qeA','_blank')\">📍 Open in Google Maps</button>\n      </div>"
-      },
-      {
-        "type": "html",
         "formVariant": true,
         "html": "<div class=\"info-slide-icon\">✉️</div>\n      <div class=\"info-slide-heading\">Send a Message</div>\n      <div class=\"fgroup\"><label class=\"flabel\">Your Name</label><input class=\"finput\" id=\"rm-name\" placeholder=\"Ramesh Kumar\"></div>\n      <div class=\"form-row-2\"><div class=\"fgroup\"><label class=\"flabel\">Phone</label><input class=\"finput\" id=\"rm-phone\" placeholder=\"+91 99999 00000\"></div><div class=\"fgroup\"><label class=\"flabel\">Email</label><input class=\"finput\" id=\"rm-email\" placeholder=\"you@example.com\"></div></div>\n      <div class=\"fgroup\"><label class=\"flabel\">Budget Range</label><select class=\"fselect\" id=\"rm-budget\"><option>Select budget</option><option>Under ₹5 Lakhs</option><option>₹5–10 Lakhs</option><option>₹10–25 Lakhs</option><option>₹25–50 Lakhs</option><option>₹50 Lakhs+</option></select></div>\n      <div class=\"fgroup\"><label class=\"flabel\">Message</label><textarea class=\"finput\" id=\"rm-message\" rows=\"3\" placeholder=\"Tell us about your space...\" style=\"resize:vertical\"></textarea></div>\n      <button class=\"auth-submit\" onclick=\"submitReachUsMessage()\">Send Message</button>"
       }

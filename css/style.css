@@ -336,28 +336,10 @@ input, select, textarea { font-family:inherit; outline:none; }
 
 /* ── MUSH POST CARD ───────────────────────────────── */
 .mush-card {
-  position:relative;
   background: var(--bg);
   border-bottom: 1px solid var(--border);
   padding-bottom: 4px;
   margin-bottom: 0;
-}
-.post-nav-arrow {
-  position:absolute; top:50%; transform:translateY(-50%);
-  z-index:8; width:34px; height:34px; border:1px solid var(--border);
-  border-radius:50%; background:var(--surface); color:var(--text2);
-  display:flex; align-items:center; justify-content:center;
-  opacity:0; pointer-events:none; cursor:pointer;
-  box-shadow:0 3px 12px rgba(0,0,0,.12);
-  transition:opacity .2s, background .2s, color .2s;
-}
-.mush-card:hover .post-nav-arrow { opacity:1; pointer-events:auto; }
-.post-nav-arrow:hover { background:var(--text); color:var(--bg); }
-.post-nav-arrow-left { left:-48px; }
-.post-nav-arrow-right { right:-48px; }
-.post-nav-arrow svg { width:18px; height:18px; stroke-width:2.5; }
-@media (max-width:600px), (hover:none), (pointer:coarse) {
-  .post-nav-arrow { display:none; }
 }
 .post-header {
   display: flex; align-items: center;

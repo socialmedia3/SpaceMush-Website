@@ -588,12 +588,6 @@ function buildUniversalPostCard(post,key,position){
     <div class="post-time">${project.times||''}</div>` : '';
   const click=isProject&&projectIndex>=0 ? `openProject(${projectIndex})` : action;
   return `<article class="mush-card sr" data-post-id="${key}" data-index="${projectIndex}">
-    <button class="post-nav-arrow post-nav-arrow-left" onclick="event.stopPropagation();scrollFeedPost(this,-1)" aria-label="Previous post">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="15 18 9 12 15 6"/></svg>
-    </button>
-    <button class="post-nav-arrow post-nav-arrow-right" onclick="event.stopPropagation();scrollFeedPost(this,1)" aria-label="Next post">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="9 18 15 12 9 6"/></svg>
-    </button>
     <div class="post-header">
       <div class="post-avatar-ring"><div class="post-avatar"><span class="post-avatar-label">${author.avatar||'SM'}</span></div></div>
       <div class="post-info">
@@ -612,15 +606,6 @@ function buildUniversalPostCard(post,key,position){
     <div class="post-caption">${caption}${isProject?`<span class="show-more" onclick="openProject(${projectIndex})"> more</span>`:''}</div>
     ${metadata}
   </article>`;
-}
-
-function scrollFeedPost(button,direction){
-  const current=button&&button.closest('.mush-card');
-  const posts=Array.from(document.querySelectorAll('#feedContainer > .mush-card'));
-  if(!current||!posts.length) return;
-  const currentIndex=posts.indexOf(current);
-  const target=posts[currentIndex+direction];
-  if(target) target.scrollIntoView({behavior:'smooth',block:'start'});
 }
 
 const silhouetteSVG=`<svg viewBox="0 0 80 80" aria-hidden="true"><circle cx="40" cy="25" r="14" fill="currentColor"/><path d="M14 70c2-17 12-27 26-27s24 10 26 27H14z" fill="currentColor"/></svg>`;

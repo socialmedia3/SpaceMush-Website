@@ -39,6 +39,10 @@ let currentEditIndex=-1; // -1 = new post, >=0 = editing existing
 let storyViewerMushIndex=-1;
 let storyTimerRef=null;
 let currentStorySegment=0;
+let storyQueue=[];
+let currentStoryIdx=-1;
+let storyTouchStartX=null;
+let storyTouchStartY=null;
 let notifPanelOpen=false;
 let cardImgIdx={}; // {postIndex: currentImageIndex} for feed/grid card carousels
 let projCardImgIdx={}; // {postIndex: currentImageIndex} for the Projects-page post carousels (kept separate from cardImgIdx so Home + Projects can render the same project independently without DOM id clashes)
@@ -54,8 +58,7 @@ function loadRegisteredUsers(){
 function saveRegisteredUsers(list){
   try{ localStorage.setItem('sm-users',JSON.stringify(list)); }catch(e){}
 }
-const STUDIO_CREDS={email:'ssrstudio@gmail.com',password:'Ember1149!Sm'};
-const ADMIN_CREDS={email:'adminsm9@gmail.com',password:'Cobalt4682*Sm'};
+// Studio/admin credentials removed. The public site no longer uses a staff login flow.
 
 // ══════════════════════════════════════════════════════════════
 // OWNER NOTIFICATIONS — emails contact-form leads and account
@@ -238,6 +241,7 @@ function init(){
   favicon.rel='icon'; favicon.href=LOGO_B64.badge;
   document.head.appendChild(favicon);
   try { renderStories(); } catch(e) { console.error('Stories init error:', e); }
+  bindStoryViewerGestures();
   setTimeout(function(){ try { initStoryArrows(); } catch(e) {} }, 100);
   setTimeout(function(){ try { initFilterArrows(); } catch(e) {} }, 100);
   // The remaining systems are enhancements; isolate them so one failure cannot
@@ -383,52 +387,136 @@ function renderStories(){
   c.innerHTML=html;
 }
 
-function openStudioStory(){
-  // Show studio's general story
-  viewStoryContent(-1,'SpaceMush Studio','just now','✨','Our latest projects are live! Swipe through the Mush feed to explore.',null);
+function buildStoryQueue(){
+  const queue=[{
+    id:'studio',
+    name:'SpaceMush Studio',
+    time:'just now',
+    emoji:'✨',
+    caption:'Our latest projects are live! Swipe through the Mush feed to explore.',
+    mushIdx:null,
+    bg:'linear-gradient(135deg,#1a0a0a,#0a0a1a)',
+    image:null
+  }];
+
+  mushData.forEach((m,i)=>{
+    const image = m.images && m.images.length ? m.images[0] : null;
+    queue.push({
+      id:'mush-'+i,
+      name:projectDisplayName(m),
+      time:m.times || 'just now',
+      emoji:m.emoji || '✨',
+      caption:m.hasStory ? (m.storyCaption || 'Latest from '+projectDisplayName(m)) : 'Tap to view this project →',
+      mushIdx:i,
+      bg:m.bg ? 'linear-gradient('+m.bg+')' : 'linear-gradient(135deg,#1a0a0a,#0a0a1a)',
+      image:image
+    });
+  });
+
+  return queue;
 }
 
-function viewStory(i){
-  const m=mushData[i];
-  if(m.hasStory){
-    // Manual story
-    viewStoryContent(i,projectDisplayName(m),m.times,m.emoji,m.storyCaption||'Latest from '+projectDisplayName(m),i);
-  } else {
-    // Auto story — uses mush emoji, links directly to the post
-    viewStoryContent(i,projectDisplayName(m),m.times,m.emoji,'Tap to view this project →',i);
-  }
-  mushData[i].storySeen=true;
-  renderStories();
-}
+function openStoryQueue(index){
+  storyQueue = buildStoryQueue();
+  if(!storyQueue.length) return;
 
-function viewStoryContent(mushIdx,name,time,emoji,caption,linkMushIdx){
-  storyViewerMushIndex=linkMushIdx;
-  set('svName','textContent',name);
-  set('svTime','textContent',time);
-  const storyImg = mushIdx>=0 && mushData[mushIdx] && mushData[mushIdx].images && mushData[mushIdx].images.length ? mushData[mushIdx].images[0] : null;
-  set('svContent','innerHTML',storyImg ? '<img class="story-project-image" src="'+storyImg+'" alt="'+name+'">' : '<div style="font-size:100px;margin-bottom:20px">'+emoji+'</div>');
-  setStyle('svContent','background',mushIdx>=0&&mushData[mushIdx]?('linear-gradient('+mushData[mushIdx].bg+')'):'linear-gradient(135deg,#1a0a0a,#0a0a1a)');
-  set('svCaption','textContent',caption);
-  // View post button
+  currentStoryIdx = ((index % storyQueue.length) + storyQueue.length) % storyQueue.length;
+  const story = storyQueue[currentStoryIdx];
+  storyViewerMushIndex = story.mushIdx;
+
+  set('svName','textContent',story.name);
+  set('svTime','textContent',story.time);
+  set('svContent','innerHTML', story.image
+    ? '<img class="story-project-image" src="'+story.image+'" alt="'+story.name+'">'
+    : '<div style="font-size:100px;margin-bottom:20px">'+story.emoji+'</div>');
+  setStyle('svContent','background', story.bg || 'linear-gradient(135deg,#1a0a0a,#0a0a1a)');
+  set('svCaption','textContent',story.caption);
+
   const viewBtn=document.getElementById('svViewBtn');
-  if(linkMushIdx!==null&&linkMushIdx>=0){
+  if(story.mushIdx!==null && story.mushIdx>=0){
     viewBtn.style.display='inline-flex';
     viewBtn.textContent='View Project →';
   } else {
     viewBtn.style.display='none';
   }
-  // Progress bar — single segment animated
+
   const pb=document.getElementById('storyProgressBar');
-  pb.innerHTML=`<div class="story-prog-seg"><div class="story-prog-fill" id="spf0"></div></div>`;
+  if(pb) pb.innerHTML='<div class="story-prog-seg"><div class="story-prog-fill" id="spf0"></div></div>';
+
   addClass('storyViewerOverlay','open');
   document.body.style.overflow='hidden';
-  // Start progress animation
+  bindStoryViewerGestures();
+
   clearTimeout(storyTimerRef);
   setTimeout(()=>{
     const fill=document.getElementById('spf0');
     if(fill){fill.style.width='100%';fill.classList.add('animating');}
   },50);
-  storyTimerRef=setTimeout(()=>closeStoryViewer(),5100);
+
+  storyTimerRef=setTimeout(()=>{
+    if(currentStoryIdx < storyQueue.length - 1){
+      openStoryQueue(currentStoryIdx + 1);
+    } else {
+      closeStoryViewer();
+    }
+  },5100);
+
+}
+
+function bindStoryViewerGestures(){
+  const box=document.querySelector('.story-viewer-box');
+  if(!box || box.dataset.storyBound==='1') return;
+
+  box.addEventListener('pointerdown', function(e){
+    storyTouchStartX=e.clientX;
+    storyTouchStartY=e.clientY;
+  }, {passive:true});
+
+  box.addEventListener('pointerup', function(e){
+    if(storyTouchStartX===null) return;
+    const dx=e.clientX - storyTouchStartX;
+    const dy=e.clientY - storyTouchStartY;
+    const rect=box.getBoundingClientRect();
+    const tapX=e.clientX - rect.left;
+
+    if(Math.abs(dx) > 35 && Math.abs(dx) > Math.abs(dy)){
+      if(dx < 0){
+        if(currentStoryIdx < storyQueue.length - 1) openStoryQueue(currentStoryIdx + 1);
+        else closeStoryViewer();
+      } else if(dx > 0 && currentStoryIdx > 0){
+        openStoryQueue(currentStoryIdx - 1);
+      }
+    } else if(tapX > rect.width * 0.75){
+      if(currentStoryIdx < storyQueue.length - 1) openStoryQueue(currentStoryIdx + 1);
+      else closeStoryViewer();
+    } else if(tapX < rect.width * 0.25 && currentStoryIdx > 0){
+      openStoryQueue(currentStoryIdx - 1);
+    }
+
+    storyTouchStartX=null;
+    storyTouchStartY=null;
+  }, {passive:true});
+
+  box.dataset.storyBound='1';
+}
+
+function openStudioStory(){
+  openStoryQueue(0);
+}
+
+function viewStory(i){
+  const queue = buildStoryQueue();
+  const targetIndex = queue.findIndex(story => story.mushIdx === i);
+  if(targetIndex >= 0){
+    openStoryQueue(targetIndex);
+  } else {
+    openStoryQueue(0);
+  }
+
+  if(mushData[i]){
+    mushData[i].storySeen=true;
+    renderStories();
+  }
 }
 
 function storyViewPost(){
@@ -439,6 +527,8 @@ function storyViewPost(){
 function closeStoryViewer(e){
   if(!e||e.target===document.getElementById('storyViewerOverlay')){
     clearTimeout(storyTimerRef);
+    storyTouchStartX=null;
+    storyTouchStartY=null;
     removeClass('storyViewerOverlay','open');
     document.body.style.overflow='';
   }
@@ -1574,35 +1664,17 @@ function closeProjectModal(e){
 // AUTH MODAL (includes Studio login tab)
 // ============================================================
 function openAuth(type){
-  el('stEmail').value='';
-  el('stPass').value='';
-  addClass('studioLoginOverlay','open');
-  document.body.style.overflow='hidden';
+  return;
 }
 function closeStudioLogin(e){
-  if(!e||e.target===el('studioLoginOverlay')){
-    removeClass('studioLoginOverlay','open');
-    document.body.style.overflow='';
-  }
+  return;
 }
 function openAdminLogin(){
-  addClass('adminLoginOverlay','open');
-  document.body.style.overflow='hidden';
+  return;
 }
 
 function submitStudioLogin(){
-  var stEl=el('stEmail');var stPa=el('stPass');
-  var email=stEl?stEl.value.trim():'';
-  var pass=stPa?stPa.value:'';
-  if(email===STUDIO_CREDS.email&&pass===STUDIO_CREDS.password){
-    studioLoggedIn=true;
-    closeStudioLogin();
-    updateNavForStudio();
-    updateBadges();
-    toast('🏗️ Welcome to SpaceMush Studio!');
-  } else {
-    toast('❌ Invalid studio credentials');
-  }
+  toast('Studio login is disabled.');
 }
 
 // Follower count — starts at base + signup count
@@ -1631,37 +1703,11 @@ function closeAuthModal(e){
 // ADMIN PANEL — Full working implementation
 // ============================================================
 function openAdminPanel(){
-  if(!studioLoggedIn&&!adminLoggedIn){
-    var aEl=el('adminLoginEmail');
-    var aPa=el('adminLoginPass');
-    if(aEl) aEl.value='';
-    if(aPa) aPa.value='';
-    addClass('adminLoginOverlay','open');
-    document.body.style.overflow='hidden';
-    return;
-  }
-  launchAdminPanel(adminLoggedIn?'SpaceMush Admin':'SpaceMush Studio');
+  return;
 }
 
 function submitAdminLogin(){
-  var aEl=el('adminLoginEmail');
-  var aPa=el('adminLoginPass');
-  if(!aEl||!aPa) return;
-  var em=aEl.value.trim();
-  var pw=aPa.value;
-  if(em===ADMIN_CREDS.email&&pw===ADMIN_CREDS.password){
-    adminLoggedIn=true;
-    closeAdminLogin();
-    launchAdminPanel('SpaceMush Admin');
-    toast('👑 Admin access granted. Welcome!');
-  } else if(em===STUDIO_CREDS.email&&pw===STUDIO_CREDS.password){
-    adminLoggedIn=true;
-    closeAdminLogin();
-    launchAdminPanel('SpaceMush Studio');
-    toast('🏗️ Studio admin access granted!');
-  } else {
-    toast('❌ Wrong credentials.');
-  }
+  toast('Admin login is disabled.');
 }
 
 function launchAdminPanel(userLabel){

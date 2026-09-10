@@ -111,8 +111,9 @@ const CONTENT_POSTS = {
         "alt": "Who we are — image 1"
       },
       {
-        "type": "html",
-        "html": ""
+        "type": "image",
+        "src": "images/posts/who-we-are/2nd.png",
+        "alt": "Who we are — image 2"
       },
       {
         "type": "image",

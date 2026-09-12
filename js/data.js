@@ -62,6 +62,37 @@ const LOGO_B64 = {
 
 
 const CONTENT_POSTS = {
+  "what-we-do": {
+    "avatarText": "SM",
+    "handle": "spacemush_architects_chennai",
+    "subtitle": "What we do · Thoughtful design for real lives",
+    "caption": "<span class=\"handle\">spacemush_architects_chennai</span> Thoughtful design. Functional spaces. Real people's lives. A glimpse of the spaces we design and bring to life <span class=\"hashtag\">#WhatWeDo</span> <span class=\"hashtag\">#SpaceMush</span>",
+    "actionOnClick": "bookConsultationWhatsApp()",
+    "time": "WHAT WE DO",
+    "slides": [
+      {
+        "type": "image",
+        "src": "images/posts/what-we-do/1st.png",
+        "alt": "What we do at SpaceMush — image 1"
+      },
+      {
+        "type": "image",
+        "src": "images/posts/what-we-do/2nd.png",
+        "alt": "What we do at SpaceMush — image 2"
+      },
+      {
+        "type": "image",
+        "src": "images/posts/what-we-do/3rd.png",
+        "alt": "What we do at SpaceMush — image 3"
+      },
+      {
+        "type": "image",
+        "src": "images/posts/what-we-do/4th.png",
+        "alt": "What we do at SpaceMush — image 4"
+      }
+    ],
+    "postType": "info"
+  },
   "where-it-all-begins": {
     "avatarText": "SM",
     "handle": "spacemush_architects_chennai",
@@ -545,6 +576,7 @@ const FEED_CONFIG = [
   'where-it-all-begins',
   'la-perle',
   'who-ssr',
+  'what-we-do',
   'anna-nagar',
   'how-we-design',
   'nathans-home',

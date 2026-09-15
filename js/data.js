@@ -221,34 +221,30 @@ const CONTENT_POSTS = {
     "actionOnClick": "bookConsultationWhatsApp()",
     "slides": [
       {
-        "type": "text",
-        "icon": "❓",
-        "heading": "What does SpaceMush do?",
-        "bodyHtml": "<p>We design and execute small spaces — from new homes on constrained urban plots to renovations and interiors.</p>"
+        "type": "image",
+        "src": "images/posts/faq/1st.png",
+        "alt": "SpaceMush FAQ — what SpaceMush does"
       },
       {
-        "type": "text",
-        "icon": "🏗️",
-        "heading": "Do you only provide design?",
-        "bodyHtml": "<p>No. We offer <strong>Design Only</strong>, <strong>Design + Documentation</strong>, and <strong>Full End-to-End</strong> services depending on what you need.</p>"
+        "type": "image",
+        "src": "images/posts/faq/2nd.png",
+        "alt": "SpaceMush FAQ — design and execution services"
       },
       {
-        "type": "text",
-        "icon": "📐",
-        "heading": "What kind of projects do you take?",
-        "bodyHtml": "<p>We work on small and constrained residential spaces, including new homes, renovations and interior projects.</p>"
+        "type": "image",
+        "src": "images/posts/faq/3rd.png",
+        "alt": "SpaceMush FAQ — project types"
       },
       {
-        "type": "text",
-        "icon": "📍",
-        "heading": "Where is SpaceMush based?",
-        "bodyHtml": "<p>Our studio is in <strong>Alwarpet, Chennai</strong>. See the “How to Find Us” post for the address and parking guidance.</p>"
+        "type": "image",
+        "src": "images/posts/faq/4th.png",
+        "alt": "SpaceMush FAQ — studio location"
       },
       {
-        "type": "text",
-        "icon": "💬",
-        "heading": "How do I start a project?",
-        "bodyHtml": "<p>Send us your site details, requirements and what you have in mind. You can reach SpaceMush through WhatsApp, email or phone.</p><button class=\"info-slide-btn\" onclick=\"bookConsultationWhatsApp()\">WhatsApp SpaceMush</button>"
+        "type": "image",
+        "src": "images/posts/faq/5th.png",
+        "alt": "SpaceMush FAQ — how to start a project",
+        "overlayButton": true
       }
     ],
     "postType": "info"

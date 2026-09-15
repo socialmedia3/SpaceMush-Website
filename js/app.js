@@ -630,7 +630,10 @@ function configureMixedInfoPosts(){
       const alt=escapeAttr(slide.alt||'SpaceMush');
       const fit=slide.fit==='contain' ? 'contain' : 'cover';
       const theme=slide.theme ? ` info-slide-theme-${escapeAttr(slide.theme)}` : '';
-      return `<div class="info-slide-media${theme}"><img src="${src}" alt="${alt}" loading="lazy" draggable="false" style="object-fit:${fit}"></div>`;
+      const overlayButton=slide.overlayButton
+        ? '<button class="info-slide-image-overlay-button" type="button" aria-label="WhatsApp SpaceMush" onclick="event.stopPropagation();bookConsultationWhatsApp()">WhatsApp SpaceMush</button>'
+        : '';
+      return `<div class="info-slide-media${theme}${overlayButton?' has-overlay-button':''}"><img src="${src}" alt="${alt}" loading="lazy" draggable="false" style="object-fit:${fit}">${overlayButton}</div>`;
     }
 
     if(slide.type==='html') return slide.html||'';

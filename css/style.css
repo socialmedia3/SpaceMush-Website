@@ -495,6 +495,15 @@ input, select, textarea { font-family:inherit; outline:none; }
   width:100%; height:100%; object-fit:cover; display:block;
   user-select:none; -webkit-user-drag:none;
 }
+.info-slide-media.has-overlay-button { position:relative; }
+.info-slide-image-overlay-button {
+  position:absolute; z-index:2; left:7%; top:59%; width:43%; height:8%;
+  padding:0; border:0; background:transparent; color:transparent;
+  cursor:pointer; font-size:0;
+}
+.info-slide-image-overlay-button:focus-visible {
+  outline:2px solid #fff; outline-offset:3px; border-radius:8px;
+}
 .info-slide-heading {
   font-family:'Playfair Display',serif; font-size:21px; font-weight:600;
   margin-bottom:12px; line-height:1.3;

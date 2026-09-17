@@ -1423,7 +1423,7 @@ function openCreatePost(editIndex){
     document.getElementById('cp-year').value=m.year;
     document.getElementById('cp-timeline').value=m.timeline;
     document.getElementById('cp-architect').value=m.architect;
-    document.getElementById('cp-designer').value=m.designer;
+    document.getElementById('cp-client').value=m.client||'';
     document.getElementById('cp-caption').value=m.caption;
     document.getElementById('cp-desc').value=m.desc;
     // Set emoji preview
@@ -1442,7 +1442,7 @@ function openCreatePost(editIndex){
     document.getElementById('cp-year').value=new Date().getFullYear();
     document.getElementById('cp-timeline').value='';
     document.getElementById('cp-architect').value='Karthik R.';
-    document.getElementById('cp-designer').value='Harish S.';
+    document.getElementById('cp-client').value='';
     document.getElementById('cp-caption').value='';
     document.getElementById('cp-desc').value='';
     if(el('cp-general-title')) el('cp-general-title').value='';
@@ -1619,7 +1619,7 @@ function publishMush(){
     type:document.getElementById('cp-type').value,
     timeline:document.getElementById('cp-timeline').value||'—',
     architect:document.getElementById('cp-architect').value||'Karthik R.',
-    designer:document.getElementById('cp-designer').value||'Harish S.',
+    client:document.getElementById('cp-client').value||'—',
     contractor:'M/s BuildRight',
     likes:0,comments:0,
     hasStory:document.getElementById('cp-story-toggle').checked,
@@ -1633,7 +1633,7 @@ function publishMush(){
     gallery:['🏠','✨','💡','🌿','🛋️','🪟'],
     images:selectedPostImages.slice(),
     testimonial:'"Another exceptional SpaceMush project."',
-    client:'— Happy Client',times:'just now',
+    times:'just now',
   };
   if(isEdit){
     // Merge into existing, preserve some fields
@@ -1797,7 +1797,7 @@ function openProject(i){
   var pmeta=el('pmrMeta'); if(pmeta) pmeta.innerHTML=[
     ['Location',m.loc],['Client',m.client || 'Not disclosed'],['Area',m.area],['Year',m.year],
     ['Budget',m.budget],['Type',m.type],['Timeline',m.timeline],
-    ['Architect',m.architect],['Designer',m.designer],['Contractor',m.contractor],
+    ['Architect',m.architect],['Contractor',m.contractor],
   ].map(([l,v])=>`<div class="pmr-meta-item"><div class="pmr-meta-label">${l}</div><div class="pmr-meta-val">${v}</div></div>`).join('');
   var pmat=el('pmrMaterials'); if(pmat) pmat.innerHTML=m.materials.map(mat=>`<span class="mat-chip">${mat}</span>`).join('');
   var ppal=el('pmrPalette'); if(ppal) ppal.innerHTML=m.palette.map(c=>`<div class="palette-swatch" style="background:${c}" title="${c}" onclick="toast('Color: ${c}')"></div>`).join('')+`<span style="font-size:12px;color:var(--lightgray);margin-left:8px">${m.palette.length} colors</span>`;

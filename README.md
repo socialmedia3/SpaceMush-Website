@@ -183,7 +183,7 @@ Use this structure:
   "type": "G+1 Residence",
   "timeline": "TIMELINE",
   "architect": "ARCHITECT NAME",
-  "designer": "Team SpaceMush",
+  "client": "Client Name, Chennai",
   "contractor": "SpaceMush LLP",
   "likes": 0,
   "comments": 0,
@@ -214,7 +214,6 @@ Use this structure:
   ],
   "brochureKey": null,
   "testimonial": null,
-  "client": "Client Name, Chennai",
   "times": "2026"
 },
 ```

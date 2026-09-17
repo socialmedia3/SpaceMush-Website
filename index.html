@@ -285,6 +285,10 @@
         </select>
         <div class="form-help">Use a project post for completed work, or a general carousel for topics like What We Do, design ideas, or studio updates.</div>
       </div>
+      <div class="fgroup"><label class="flabel">Feed position</label>
+        <select class="fselect" id="cp-feed-position"><option value="top">Top of feed</option><option value="bottom">Bottom of feed</option></select>
+        <div class="form-help">Choose where this post should appear between the existing posts.</div>
+      </div>
       <div id="generalPostFields" style="display:none">
         <div class="form-row-2">
           <div class="fgroup"><label class="flabel">Post topic / title</label><input class="finput" id="cp-general-title" placeholder="What We Do"></div>
@@ -296,6 +300,10 @@
       <div class="form-row-2">
         <div class="fgroup"><label class="flabel">Mush Handle</label><input class="finput" id="cp-handle" placeholder="Mush_009_Egmore"></div>
         <div class="fgroup"><label class="flabel">Location</label><input class="finput" id="cp-loc" placeholder="Egmore, Chennai"></div>
+      </div>
+      <div class="form-row-2">
+        <div class="fgroup"><label class="flabel">Project number</label><input class="finput" id="cp-project-number" inputmode="numeric" placeholder="009"><div class="form-help">Used in the MUSH # button.</div></div>
+        <div class="toggle-row" style="margin-bottom:11px"><div><div class="toggle-label">Show MUSH # button</div><div class="toggle-sub">Display this project number on the post</div></div><label class="toggle-switch"><input type="checkbox" id="cp-show-mush"><span class="toggle-slider"></span></label></div>
       </div>
       <div class="form-row-2">
         <div class="fgroup"><label class="flabel">Project Type</label>
@@ -523,7 +531,7 @@
         </div>
         <div class="admin-posts-toolbar">
           <label class="admin-search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input id="adminPostSearch" type="search" placeholder="Search posts, locations, tags..." oninput="renderAdminPosts()"></label>
-          <select id="adminPostFilter" class="admin-filter-select" onchange="renderAdminPosts()"><option value="all">All posts</option><option value="story">With stories</option><option value="residential">Residential</option><option value="commercial">Commercial</option><option value="recent">Newest first</option></select>
+          <select id="adminPostFilter" class="admin-filter-select" onchange="renderAdminPosts()"><option value="all">Live posts</option><option value="archived">Archived</option><option value="story">With stories</option><option value="residential">Residential</option><option value="commercial">Commercial</option><option value="recent">Newest first</option></select>
           <div class="admin-post-count" id="adminPostCount"></div>
         </div>
         <div class="admin-posts-grid" id="adminPostsGrid"></div>

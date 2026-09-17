@@ -49,6 +49,10 @@ let projCardImgIdx={}; // {postIndex: currentImageIndex} for the Projects-page p
 let modalImgIdx=0; // current image index inside the project modal carousel
 let selectedPostImages=[]; // data URLs selected in the post editor
 let generalPosts=[]; // runtime-created general carousel posts
+let runtimeProjectPosts=[]; // project posts created from the admin editor this session
+let currentEditGeneralKey=null;
+let deletedPostKeys=new Set();
+let archivedPostKeys=new Set();
 
 // ── AUTH: registered users persist in localStorage; no demo accounts ──
 function loadRegisteredUsers(){
@@ -548,20 +552,27 @@ function renderFeed(){
     ? FEED_CONFIG
     : ['where-it-all-begins','la-perle','who-ssr','anna-nagar','how-we-design','nathans-home','who-we-are','how-to-find-us','contact','faq'];
   const parts=[];
+  var runtimePosts=runtimeProjectPosts.concat(generalPosts);
+  function addRuntimePosts(position){
+    runtimePosts.filter(function(post){return (post.feedInsertBefore||'top')===position&&!archivedPostKeys.has(post.runtimeKey);}).forEach(function(post){
+      var index=runtimePosts.indexOf(post);
+      parts.push(buildUniversalPostCard(post,post.runtimeKey||('runtime-post-'+index),parts.length));
+    });
+  }
+  addRuntimePosts('top');
   mixed.forEach((item,position)=>{
     try{
       const key=typeof item==='string' ? item : (item.key || item.id);
+      addRuntimePosts(key);
       const post=(typeof POSTS!=='undefined' && POSTS) ? POSTS[key] : null;
-      if(post) parts.push(buildUniversalPostCard(post,key,position));
+      if(post&&!deletedPostKeys.has(key)&&!archivedPostKeys.has(key)) parts.push(buildUniversalPostCard(post,key,position));
     }catch(err){
       console.error('SpaceMush feed post '+position+' failed:',err);
       // Keep the rest of the feed usable if one post contains bad data.
       parts.push(`<article class="mush-card sr"><div class="post-header"><div class="post-avatar-ring"><div class="post-avatar"><span class="post-avatar-label">SM</span></div></div><div class="post-info"><div class="post-handle">SpaceMush Architects</div><div class="post-subloc">Chennai</div></div></div><div class="post-image-wrap"><div class="info-carousel-wrap" style="display:flex;align-items:center;justify-content:center;padding:40px;text-align:center"><div><div class="info-slide-heading">SpaceMush Architects</div><div class="info-slide-body"><p>Small Spaces Deserve Design.</p></div></div></div></div></article>`);
     }
   });
-  generalPosts.forEach(function(post,index){
-    parts.push(buildUniversalPostCard(post,'runtime-general-'+index,mixed.length+index));
-  });
+  addRuntimePosts('bottom');
   c.innerHTML=parts.join('');
   try{initTouchCarousels();}catch(e){console.error('Carousel init error:',e);}
   try{setupScrollReveal();}catch(e){document.querySelectorAll('.sr').forEach(x=>x.classList.add('in'));}
@@ -603,7 +614,7 @@ function buildUniversalPostCard(post,key,position){
         <div class="post-subloc">${subtitle}</div>
         ${isProject&&project.client?`<div class="post-client-line"><strong>Client</strong> ${projectClientName({client:project.client})}</div>`:''}
       </div>
-      ${isProject?`<div class="mush-badge">MUSH #${mushNumber(mushData[projectIndex])}</div>`:''}
+      ${isProject&&mushData[projectIndex].showMushBadge!==false?`<div class="mush-badge">MUSH #${mushNumber(mushData[projectIndex])}</div>`:''}
     </div>
     <div class="post-image-wrap">${media}</div>
     <div class="post-actions">
@@ -629,7 +640,7 @@ function registerGeneralPost(post){
   infoPosts[key]={idx:0,slides:post.images.map(function(src,index){
     return {inner:'<div class="info-slide-media"><img src="'+src+'" alt="'+post.handle+' image '+(index+1)+'" loading="lazy" draggable="false"></div>'};
   })};
-  generalPosts.push({type:'carousel',author:{name:post.handle,avatar:'SM'},subtitle:post.subtitle||post.loc||'SpaceMush Studio',caption:post.caption,hashtags:[],slides:infoPosts[key].slides,key:key,postType:'general'});
+  generalPosts.push({type:'carousel',author:{name:post.handle,avatar:'SM'},subtitle:post.subtitle||post.loc||'SpaceMush Studio',caption:post.caption,images:post.images.slice(),hashtags:[],slides:infoPosts[key].slides,key:key,runtimeKey:key,feedInsertBefore:post.feedInsertBefore||'top',postType:'general'});
   return key;
 }
 
@@ -840,6 +851,7 @@ document.addEventListener('click',e=>{
 // mushData alongside the Home feed without id collisions.
 // ============================================================
 function mushNumber(m){
+  if(m&&m.mushNumber!==undefined&&m.mushNumber!==null&&String(m.mushNumber)!=='') return String(m.mushNumber);
   const match=(m&&m.handle||'').match(/Mush_(\d+)/i);
   return match?match[1]:(m&&m.id)||'';
 }
@@ -898,7 +910,7 @@ function buildProjectPostCard(m,i){
         </div>
         <div class="post-subloc">📍 ${m.loc}</div>
       </div>
-      <div class="mush-badge">MUSH #${mushNumber(m)}</div>
+      ${m.showMushBadge!==false?`<div class="mush-badge">MUSH #${mushNumber(m)}</div>`:''}
     </div>
     <div class="post-image-wrap">
       ${buildProjectCardCarousel(m,i)}
@@ -1374,9 +1386,11 @@ function updateBadges(){
 function openCreatePost(editIndex){
   if(!studioLoggedIn){toast('🔐 Please log in to Studio first');openAuth('studio');return;}
   currentEditIndex=editIndex!==undefined?editIndex:-1;
-  const isEdit=currentEditIndex>=0;
+  const isGeneralEdit=currentEditGeneralKey!==null;
+  const isEdit=currentEditIndex>=0||isGeneralEdit;
   var kind=el('cp-post-kind');
-  if(kind) kind.value='project';
+  if(kind) kind.value=isGeneralEdit?'general':'project';
+  populateFeedPositionOptions();
   document.getElementById('createPostTitle').textContent=isEdit?'✏️ Edit Mush Post':'✦ New Mush Post';
   // Reset emoji picker
   document.getElementById('uploadIcon').style.display='block';
@@ -1385,11 +1399,25 @@ function openCreatePost(editIndex){
   renderPostImagePreviews();
   document.getElementById('uploadZone').classList.remove('has-img');
   document.getElementById('cp-story-toggle').checked=false;
+  document.getElementById('cp-show-mush').checked=true;
   document.getElementById('cp-story-note').style.display='none';
-  if(isEdit){
+  if(isGeneralEdit){
+    var general=generalPosts.find(function(post){return post.key===currentEditGeneralKey;});
+    var source=(typeof POSTS!=='undefined'&&POSTS[currentEditGeneralKey])||general;
+    if(source){
+      document.getElementById('cp-general-title').value=source.handle||source.author&&source.author.name||currentEditGeneralKey;
+      document.getElementById('cp-general-label').value=source.subtitle||'SpaceMush Studio';
+      document.getElementById('cp-general-subtitle').value=source.subtitle||'';
+      document.getElementById('cp-caption').value=source.caption||'';
+      selectedPostImages=(source.images||((source.slides||[]).filter(function(slide){return slide.type==='image';}).map(function(slide){return slide.src;}))).slice();
+      renderPostImagePreviews();
+    }
+  } else if(isEdit){
     const m=mushData[currentEditIndex];
     document.getElementById('cp-handle').value=m.handle;
     document.getElementById('cp-loc').value=m.loc;
+    document.getElementById('cp-project-number').value=mushNumber(m);
+    document.getElementById('cp-show-mush').checked=m.showMushBadge!==false;
     document.getElementById('cp-area').value=m.area;
     document.getElementById('cp-budget').value=m.budget;
     document.getElementById('cp-year').value=m.year;
@@ -1408,6 +1436,7 @@ function openCreatePost(editIndex){
   } else {
     document.getElementById('cp-handle').value='';
     document.getElementById('cp-loc').value='';
+    document.getElementById('cp-project-number').value=String(mushData.length+1).padStart(3,'0');
     document.getElementById('cp-area').value='';
     document.getElementById('cp-budget').value='';
     document.getElementById('cp-year').value=new Date().getFullYear();
@@ -1419,6 +1448,7 @@ function openCreatePost(editIndex){
     if(el('cp-general-title')) el('cp-general-title').value='';
     if(el('cp-general-label')) el('cp-general-label').value='SpaceMush Studio';
     if(el('cp-general-subtitle')) el('cp-general-subtitle').value='';
+    if(el('cp-feed-position')) el('cp-feed-position').value='top';
   }
   togglePostKindFields();
   document.getElementById('cp-story-toggle').addEventListener('change',function(){
@@ -1429,7 +1459,30 @@ function openCreatePost(editIndex){
 }
 
 function openEditPost(i){
+  currentEditGeneralKey=null;
   openCreatePost(i);
+}
+
+function openEditGeneralPost(key){
+  currentEditIndex=-1;
+  currentEditGeneralKey=key;
+  openCreatePost();
+}
+
+function populateFeedPositionOptions(){
+  var select=el('cp-feed-position');
+  if(!select) return;
+  var mixed=(typeof FEED_CONFIG!=='undefined'&&Array.isArray(FEED_CONFIG))?FEED_CONFIG:[];
+  var options='<option value="top">Top of feed</option>';
+  mixed.forEach(function(item){
+    var key=typeof item==='string'?item:(item.key||item.id);
+    var post=(typeof POSTS!=='undefined'&&POSTS)?POSTS[key]:null;
+    if(!key||!post) return;
+    var label=post.title||post.handle||post.subtitle||key;
+    options+='<option value="'+key+'">Before: '+label+'</option>';
+  });
+  options+='<option value="bottom">Bottom of feed</option>';
+  select.innerHTML=options;
 }
 
 const emojiOptions=['🏠','🍳','🛏️','🪴','🏢','✨','💼','🏗️','🌿','🛁','🏡','🎨'];
@@ -1458,7 +1511,15 @@ function renderPostImagePreviews(){
   var text=el('uploadZoneText');
   if(!grid) return;
   grid.innerHTML=selectedPostImages.map(function(src,index){
-    return '<div class="upload-preview-thumb"><img src="'+src+'" alt="Selected project image '+(index+1)+'"><span>'+(index+1)+'</span></div>';
+    return '<div class="upload-preview-thumb" draggable="true" ondragstart="dragPostImageStart(event,'+index+')" ondragover="event.preventDefault()" ondrop="dropPostImage(event,'+index+')">'+
+      '<img src="'+src+'" alt="Selected project image '+(index+1)+'">'+
+      '<span class="upload-preview-number">'+(index+1)+'</span>'+ 
+      '<button type="button" class="upload-preview-remove" onclick="removePostImage('+index+');event.stopPropagation()" aria-label="Remove image '+(index+1)+'" title="Remove image">×</button>'+
+      '<div class="upload-preview-controls">'+
+        '<button type="button" onclick="movePostImage('+index+',-1);event.stopPropagation()" aria-label="Move image left" '+(index===0?'disabled':'')+'>‹</button>'+
+        '<button type="button" onclick="movePostImage('+index+',1);event.stopPropagation()" aria-label="Move image right" '+(index===selectedPostImages.length-1?'disabled':'')+'>›</button>'+
+      '</div>'+
+    '</div>';
   }).join('');
   if(icon) icon.style.display=selectedPostImages.length?'none':'block';
   if(emoji) emoji.style.display=selectedPostImages.length?'none':'block';
@@ -1467,6 +1528,29 @@ function renderPostImagePreviews(){
     : 'Click to select project images';
   var zone=el('uploadZone');
   if(zone) zone.classList.toggle('has-img',selectedPostImages.length>0);
+}
+function movePostImage(index,direction){
+  var next=index+direction;
+  if(index<0||next<0||next>=selectedPostImages.length) return;
+  var moved=selectedPostImages.splice(index,1)[0];
+  selectedPostImages.splice(next,0,moved);
+  renderPostImagePreviews();
+}
+function removePostImage(index){
+  if(index<0||index>=selectedPostImages.length) return;
+  selectedPostImages.splice(index,1);
+  renderPostImagePreviews();
+}
+function dragPostImageStart(event,index){
+  event.dataTransfer.setData('text/plain',String(index));
+}
+function dropPostImage(event,targetIndex){
+  event.preventDefault();
+  var sourceIndex=parseInt(event.dataTransfer.getData('text/plain'),10);
+  if(isNaN(sourceIndex)||sourceIndex===targetIndex) return;
+  var moved=selectedPostImages.splice(sourceIndex,1)[0];
+  selectedPostImages.splice(targetIndex,0,moved);
+  renderPostImagePreviews();
 }
 
 function saveDraft(){
@@ -1483,7 +1567,30 @@ function publishMush(){
     if(!generalTitle){toast('⚠️ Enter a topic or title for this post');return;}
     var generalLabel=(el('cp-general-label')||{}).value.trim()||'SpaceMush Studio';
     var generalSubtitle=(el('cp-general-subtitle')||{}).value.trim()||'Thoughtful design for real lives';
-    var general={handle:generalTitle,loc:generalLabel,subtitle:generalSubtitle,caption:document.getElementById('cp-caption').value||'A new SpaceMush update is live.',images:selectedPostImages.slice()};
+    var general={handle:generalTitle,loc:generalLabel,subtitle:generalSubtitle,caption:document.getElementById('cp-caption').value||'A new SpaceMush update is live.',images:selectedPostImages.slice(),feedInsertBefore:(el('cp-feed-position')||{}).value||'top'};
+    if(currentEditGeneralKey!==null){
+      var runtimeGeneral=generalPosts.find(function(post){return post.key===currentEditGeneralKey;});
+      if(runtimeGeneral){
+        runtimeGeneral.handle=general.handle;
+        runtimeGeneral.subtitle=general.subtitle;
+        runtimeGeneral.caption=general.caption;
+        runtimeGeneral.images=general.images.slice();
+      }
+      var existingGeneral=(typeof POSTS!=='undefined'&&POSTS[currentEditGeneralKey]);
+      if(existingGeneral){
+        existingGeneral.handle=general.handle;
+        existingGeneral.subtitle=general.subtitle;
+        existingGeneral.caption=general.caption;
+        existingGeneral.slides=general.images.map(function(src,index){return {type:'image',src:src,alt:general.handle+' image '+(index+1)};});
+        infoPosts[currentEditGeneralKey]={idx:0,slides:existingGeneral.slides.map(function(slide){return {inner:'<div class="info-slide-media"><img src="'+slide.src+'" alt="'+slide.alt+'" loading="lazy" draggable="false"></div>'};})};
+      }
+      currentEditGeneralKey=null;
+      closeCreatePost();
+      renderFeed();
+      renderAdminPosts();
+      toast('✅ General post updated!');
+      return;
+    }
     registerGeneralPost(general);
     addNotification({type:'new',user:'Studio',avatar:'SM',text:'New general carousel published: <b>'+handle+'</b>',time:'just now',mushIdx:-1,thumb:'▧'});
     closeCreatePost();
@@ -1497,6 +1604,8 @@ function publishMush(){
   const previewEmoji=document.getElementById('uploadPreview').textContent||emojiOptions[0];
   const newMush={
     id:String(mushData.length+1).padStart(3,'0'),
+    mushNumber:(document.getElementById('cp-project-number').value||String(mushData.length+1).padStart(3,'0')).replace(/\D/g,''),
+    showMushBadge:document.getElementById('cp-show-mush').checked,
     handle:handle,
     loc:document.getElementById('cp-loc').value||'Chennai',
     emoji:previewEmoji,
@@ -1537,6 +1646,16 @@ function publishMush(){
     toast('✅ Mush post updated!');
   } else {
     mushData.push(newMush);
+    runtimeProjectPosts.push({
+      type:'project',
+      author:{name:'spacemush_architects_chennai',avatar:'SM'},
+      caption:newMush.caption,
+      hashtags:newMush.hashtags||[],
+      project:Object.assign({},newMush,{title:newMush.handle,location:newMush.loc,description:newMush.desc}),
+      runtimeKey:'runtime-project-'+runtimeProjectPosts.length,
+      feedInsertBefore:(el('cp-feed-position')||{}).value||'top',
+      postType:'project'
+    });
     addNotification({type:'new',user:'Studio',avatar:'SM',text:`New post published: <b>${handle}</b>`,time:'just now',mushIdx:mushData.length-1,thumb:previewEmoji});
     if(newMush.hasStory){
       addNotification({type:'story',user:'Studio',avatar:'SM',text:`Story auto-posted for <b>${handle}</b>`,time:'just now',mushIdx:mushData.length-1,thumb:previewEmoji});
@@ -1900,9 +2019,13 @@ function adminTab(name,btn){
 function renderAdminDashboard(){
   var asg=el('adminStatsGrid');
   if(!asg) return;
-  var projectCount=mushData.length;
+  var projectCount=mushData.filter(function(post){
+    var runtime=runtimeProjectPosts.find(function(item){return item.project&&String(item.project.id)===String(post.id);});
+    var key=runtime&&runtime.runtimeKey||Object.keys(POSTS||{}).find(function(candidate){return POSTS[candidate].type==='project'&&POSTS[candidate].project&&String(POSTS[candidate].project.id)===String(post.id);});
+    return !archivedPostKeys.has(key);
+  }).length;
   var existingGeneralCount=(typeof POSTS!=='undefined'&&POSTS)
-    ? Object.values(POSTS).filter(function(post){return post.type!=='project';}).length
+    ? Object.keys(POSTS).filter(function(key){return POSTS[key].type!=='project'&&!deletedPostKeys.has(key)&&!archivedPostKeys.has(key);}).length
     : 0;
   var generalCount=existingGeneralCount+generalPosts.length;
   var totalCount=projectCount+generalCount;
@@ -2213,10 +2336,22 @@ function renderAdminPosts(){
   if(!apg) return;
   var search=((el('adminPostSearch')||{}).value||'').trim().toLowerCase();
   var filter=(el('adminPostFilter')||{}).value||'all';
-  var visiblePosts=mushData.map(function(post,index){return {post:post,index:index,kind:'project'};}).concat(generalPosts.map(function(post,index){return {post:post,index:index,kind:'general'};})).filter(function(entry){
+  var existingGeneralPosts=(typeof POSTS!=='undefined'&&POSTS)
+    ? Object.keys(POSTS).map(function(key){return {post:POSTS[key],key:key,kind:'general-existing'};}).filter(function(entry){return entry.post.type!=='project'&&!deletedPostKeys.has(entry.key);})
+    : [];
+  var visiblePosts=mushData.map(function(post,index){
+    var runtime=runtimeProjectPosts.find(function(item){return item.project&&String(item.project.id)===String(post.id);});
+    return {post:post,index:index,kind:'project',key:runtime&&runtime.runtimeKey};
+  })
+    .concat(existingGeneralPosts)
+    .concat(generalPosts.map(function(post){return {post:post,key:post.key,kind:'general'};}))
+    .filter(function(entry){
     var post=entry.post;
-    var searchable=[post.handle,post.loc,post.tag,post.caption,post.category].join(' ').toLowerCase();
+    var searchable=[post.handle,post.title,post.subtitle,post.loc,post.tag,post.caption,post.category].join(' ').toLowerCase();
     if(search&&searchable.indexOf(search)===-1) return false;
+    var entryKey=entry.key||post.runtimeKey||Object.keys(POSTS||{}).find(function(key){return POSTS[key].type==='project'&&POSTS[key].project&&String(POSTS[key].project.id)===String(post.id);});
+    if(filter==='archived'&&!archivedPostKeys.has(entryKey)) return false;
+    if(filter!=='archived'&&archivedPostKeys.has(entryKey)) return false;
     if(filter==='story'&&!post.hasStory) return false;
     if(filter==='residential'&&post.category!=='residential') return false;
     if(filter==='commercial'&&post.category!=='commercial') return false;
@@ -2232,18 +2367,22 @@ function renderAdminPosts(){
   apg.innerHTML=visiblePosts.map(function(entry){
     var post=entry.post;
     var index=entry.index;
-    var cover=post.images&&post.images.length?post.images[0]:'';
+    var images=post.images||((post.slides||[]).filter(function(slide){return slide.type==='image';}).map(function(slide){return slide.src;}));
+    var cover=images.length?images[0]:'';
+    var entryKey=entry.key||post.runtimeKey||Object.keys(POSTS||{}).find(function(key){return POSTS[key].type==='project'&&POSTS[key].project&&String(POSTS[key].project.id)===String(post.id);});
+    var archived=archivedPostKeys.has(entryKey);
     return '<article class="admin-post-card">'+
-      '<div class="admin-post-img">'+(cover?'<img class="admin-post-cover" src="'+cover+'" alt="'+post.handle+' cover">':'<span>'+post.emoji+'</span>')+'<span class="admin-card-status">LIVE</span></div>'+
+      '<div class="admin-post-img">'+(cover?'<img class="admin-post-cover" src="'+cover+'" alt="'+post.handle+' cover">':'<span>'+post.emoji+'</span>')+'<span class="admin-card-status '+(archived?'archived':'')+'">'+(archived?'ARCHIVED':'LIVE')+'</span></div>'+
       '<div class="admin-post-info">'+
-        '<div class="admin-post-topline"><span class="admin-post-type">'+(post.tag||'POST')+'</span><span class="admin-post-year">'+(post.year||'2026')+'</span></div>'+
-        '<div class="admin-post-handle">'+post.handle+'</div>'+
-        '<div class="admin-post-location">'+(post.loc||'Chennai')+'</div>'+
-        '<div class="admin-post-metrics"><span>♥ '+post.likes+'</span><span>◌ '+post.comments+'</span><span>▧ '+(post.area||'—')+'</span></div>'+
+        '<div class="admin-post-topline"><span class="admin-post-type">'+(entry.kind==='project'?(post.tag||'PROJECT'):'GENERAL')+'</span><span class="admin-post-year">'+(post.year||'LIVE')+'</span></div>'+
+        '<div class="admin-post-handle">'+(post.handle||post.title||entry.key)+'</div>'+
+        '<div class="admin-post-location">'+(post.loc||post.subtitle||'SpaceMush Studio')+'</div>'+
+        '<div class="admin-post-metrics"><span>▧ '+images.length+' image'+(images.length===1?'':'s')+'</span><span>▤ '+(post.hasStory?'Story':'Carousel')+'</span></div>'+
       '</div>'+
       '<div class="admin-post-actions">'+
-        (entry.kind==='project'?'<button class="admin-action-btn edit" onclick="closeAdminPanel();openEditPost('+index+')">Edit post <span>→</span></button>':'<button class="admin-action-btn edit" disabled>General carousel <span>↗</span></button>')+
-        (entry.kind==='project'?'<button class="admin-icon-action delete" aria-label="Delete post" title="Delete post" onclick="adminDeleteMush('+index+')">⌫</button>':'')+
+        (entry.kind==='project'?'<button class="admin-action-btn edit" onclick="openEditPost('+index+')">Edit post <span>→</span></button>':'<button class="admin-action-btn edit" onclick="openEditGeneralPost(\''+entry.key+'\')">Edit post <span>→</span></button>')+
+        '<button class="admin-icon-action archive" aria-label="'+(archived?'Unarchive':'Archive')+' post" title="'+(archived?'Unarchive':'Archive')+' post" onclick="adminToggleArchive(\''+entryKey+'\')">'+(archived?'↥':'▱')+'</button>'+ 
+        (entry.kind==='project'?'<button class="admin-icon-action delete" aria-label="Delete post" title="Delete post" onclick="adminDeleteMush('+index+')">⌫</button>':'<button class="admin-icon-action delete" aria-label="Delete post" title="Delete post" onclick="adminDeleteGeneralPost(\''+entry.key+'\')">⌫</button>')+
       '</div>'+
     '</article>';
   }).join('');
@@ -2252,10 +2391,40 @@ function renderAdminPosts(){
 function adminDeleteMush(i){
   var m=mushData[i];
   if(!confirm('Delete '+m.handle+'? This cannot be undone.')) return;
+  var builtInKey=Object.keys(POSTS||{}).find(function(key){return POSTS[key].type==='project'&&POSTS[key].project&&String(POSTS[key].project.id)===String(m.id);});
+  if(builtInKey) deletedPostKeys.add(builtInKey);
+  runtimeProjectPosts=runtimeProjectPosts.filter(function(post){return !post.project||String(post.project.id)!==String(m.id);});
   deleteMush(i);
   renderAdminPosts();
   renderAdminDashboard();
   toast('🗑️ '+m.handle+' deleted');
+}
+
+function adminDeleteGeneralPost(key){
+  var post=(typeof POSTS!=='undefined'&&POSTS[key])||generalPosts.find(function(item){return item.key===key;});
+  var label=post&&(post.handle||post.title||post.subtitle)||'this post';
+  if(!confirm('Delete '+label+'? This cannot be undone.')) return;
+  deletedPostKeys.add(key);
+  generalPosts=generalPosts.filter(function(item){return item.key!==key;});
+  renderFeed();
+  renderStories();
+  renderAdminPosts();
+  renderAdminDashboard();
+  toast('🗑️ '+label+' deleted');
+}
+
+function adminToggleArchive(key){
+  if(!key) return;
+  if(archivedPostKeys.has(key)){
+    archivedPostKeys.delete(key);
+    toast('↥ Post restored to the live feed');
+  }else{
+    archivedPostKeys.add(key);
+    toast('▱ Post archived');
+  }
+  renderFeed();
+  renderAdminPosts();
+  renderAdminDashboard();
 }
 
 // ─── COMMENTS ─────────────────────────────────────────────────

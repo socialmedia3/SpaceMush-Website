@@ -128,6 +128,11 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
   </a>
 
+  <!-- Admin access -->
+  <button class="sb-theme-btn" id="adminSidebarLogin" onclick="openAdminLogin()" data-tip="Admin Login" aria-label="Admin Login" style="color:var(--text3)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/><circle cx="12" cy="16" r="1"/></svg>
+  </button>
+
   <!-- Dark/Light mode toggle -->
   <button class="sb-theme-btn" onclick="toggleTheme()" id="themeToggleBtn" data-tip="Toggle Dark Mode">
     <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
@@ -173,18 +178,7 @@
   <div style="margin-bottom:16px;padding:14px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;text-align:center">
     <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:4px">SpaceMush Architects</div>
     <div style="font-size:12px;color:var(--text3)">Small space design &amp; construction, Chennai. Scroll through our work below.</div>
-  </div>
-
-  <div id="studioAnalyticsCard" style="display:none">
-    <div class="analytics-card">
-      <div class="analytics-title">Studio Analytics</div>
-      <div class="analytics-grid">
-        <div class="ana-item"><div class="ana-num" id="liveFollowersDisplay">2,847</div><div class="ana-label">Followers</div><div class="ana-change" id="followersChange">↑ 12% week</div></div>
-        <div class="ana-item"><div class="ana-num">18.4K</div><div class="ana-label">Total Likes</div><div class="ana-change">↑ 8% week</div></div>
-        <div class="ana-item"><div class="ana-num">4.2K</div><div class="ana-label">Saved</div><div class="ana-change">↑ 21% week</div></div>
-        <div class="ana-item"><div class="ana-num">138</div><div class="ana-label">Today Views</div><div class="ana-change">↑ 5% yday</div></div>
-      </div>
-    </div>
+    <button class="admin-login-submit" style="margin-top:12px;padding:8px 12px;font-size:12px" onclick="openAdminLogin()">Admin login</button>
   </div>
 
   <div style="margin-bottom:16px">
@@ -275,13 +269,30 @@
     </div>
     <div class="create-modal-body">
       <!-- Upload zone -->
-      <div class="upload-zone" id="uploadZone" onclick="pickEmoji()">
-        <div class="upload-zone-icon" id="uploadIcon">🏗️</div>
+      <div class="upload-zone" id="uploadZone" onclick="document.getElementById('cp-images').click()">
+        <input id="cp-images" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden onclick="event.stopPropagation()" onchange="handlePostImages(event)">
+        <div class="upload-zone-icon" id="uploadIcon">＋</div>
         <div class="upload-preview-emoji" id="uploadPreview"></div>
-        <div class="upload-zone-text">Click to select project image</div>
-        <div class="upload-zone-sub">JPG, PNG, WebP · Max 20MB</div>
+        <div class="upload-preview-grid" id="uploadPreviewGrid"></div>
+        <div class="upload-zone-text" id="uploadZoneText">Click to select project images</div>
+        <div class="upload-zone-sub">JPG, PNG, WebP · Up to 10 images · 20MB each</div>
       </div>
       <!-- Fields -->
+      <div class="fgroup"><label class="flabel">Post type</label>
+        <select class="fselect" id="cp-post-kind" onchange="togglePostKindFields()">
+          <option value="project">Project post</option>
+          <option value="general">General carousel post</option>
+        </select>
+        <div class="form-help">Use a project post for completed work, or a general carousel for topics like What We Do, design ideas, or studio updates.</div>
+      </div>
+      <div id="generalPostFields" style="display:none">
+        <div class="form-row-2">
+          <div class="fgroup"><label class="flabel">Post topic / title</label><input class="finput" id="cp-general-title" placeholder="What We Do"></div>
+          <div class="fgroup"><label class="flabel">Section label</label><input class="finput" id="cp-general-label" placeholder="SpaceMush Studio"></div>
+        </div>
+        <div class="fgroup"><label class="flabel">Short introduction</label><input class="finput" id="cp-general-subtitle" placeholder="Thoughtful design for real lives"></div>
+      </div>
+      <div id="projectPostFields">
       <div class="form-row-2">
         <div class="fgroup"><label class="flabel">Mush Handle</label><input class="finput" id="cp-handle" placeholder="Mush_009_Egmore"></div>
         <div class="fgroup"><label class="flabel">Location</label><input class="finput" id="cp-loc" placeholder="Egmore, Chennai"></div>
@@ -315,8 +326,9 @@
         <div class="fgroup"><label class="flabel">Architect</label><input class="finput" id="cp-architect" placeholder="Karthik R."></div>
         <div class="fgroup"><label class="flabel">Designer</label><input class="finput" id="cp-designer" placeholder="Harish S."></div>
       </div>
-      <div class="fgroup"><label class="flabel">Caption</label><textarea class="finput" id="cp-caption" rows="2" placeholder="Describe this Mush in a captivating line..."></textarea></div>
       <div class="fgroup"><label class="flabel">Full Description</label><textarea class="finput" id="cp-desc" rows="3" placeholder="Detailed project description..."></textarea></div>
+      </div>
+      <div class="fgroup"><label class="flabel">Caption</label><textarea class="finput" id="cp-caption" rows="2" placeholder="Describe this post in a captivating line..."></textarea></div>
       <div class="toggle-row">
         <div>
           <div class="toggle-label">📖 Also Post as Story</div>
@@ -397,6 +409,33 @@
 </div>
 
 <!-- ================================================
+     ADMIN LOGIN
+     ================================================ -->
+<div class="overlay" id="adminLoginOverlay" onclick="closeAdminLogin(event)">
+  <div class="admin-login-box">
+    <div class="admin-login-art">
+      <div class="admin-login-art-top"><span>SPACEMUSH</span><span>STUDIO / 01</span></div>
+      <div class="admin-login-art-mark">SM</div>
+      <div class="admin-login-art-copy"><strong>Make room<br>for better living.</strong><span>Content command centre</span></div>
+    </div>
+    <div class="admin-login-form-wrap">
+      <button class="create-modal-close admin-login-close" onclick="closeAdminLogin()">✕</button>
+      <div class="admin-login-kicker">Private workspace</div>
+      <div class="admin-login-title">Welcome back.</div>
+      <div class="admin-login-sub">Sign in to shape the next SpaceMush story.</div>
+      <form onsubmit="submitAdminLogin(event)">
+        <label class="admin-login-label" for="adminLoginEmail">Email address</label>
+        <input class="admin-finput" id="adminLoginEmail" type="email" autocomplete="email" placeholder="you@spacemush.com" required>
+        <label class="admin-login-label" for="adminLoginPassword">Password</label>
+        <input class="admin-finput" id="adminLoginPassword" type="password" autocomplete="current-password" placeholder="Enter your password" required>
+        <button class="admin-login-submit" type="submit"><span>Enter studio</span><span>→</span></button>
+      </form>
+      <div class="admin-login-hint"><span class="admin-secure-dot"></span> Protected workspace · Supabase Auth</div>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================
      ADMIN PANEL (full-screen)
      ================================================ -->
 <div id="adminPanel">
@@ -451,13 +490,8 @@
       <!-- DASHBOARD -->
       <div class="admin-section active" id="adminSec-dashboard">
         <div class="admin-section-title">Dashboard</div>
-        <div class="admin-section-sub">Overview of SpaceMush platform activity</div>
+        <div class="admin-section-sub">A simple view of your live content.</div>
         <div class="admin-stats-grid" id="adminStatsGrid"></div>
-        <div style="font-size:15px;font-weight:700;color:var(--dark);margin-bottom:14px">🏆 Top Performing Posts</div>
-        <table class="admin-table">
-          <thead><tr><th>Handle</th><th>Location</th><th>Likes</th><th>Comments</th><th>Saved</th></tr></thead>
-          <tbody id="adminTopPostsTable"></tbody>
-        </table>
       </div>
 
       <!-- NOTIFICATIONS -->
@@ -483,11 +517,15 @@
 
       <!-- MANAGE POSTS -->
       <div class="admin-section" id="adminSec-posts">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-          <div class="admin-section-title" style="margin-bottom:0">Manage Posts</div>
-          <button class="btn-publish" style="padding:9px 18px;font-size:13px" onclick="openCreatePost()">+ New Mush</button>
+        <div class="admin-posts-heading">
+          <div><div class="admin-section-eyebrow">CONTENT LIBRARY</div><div class="admin-section-title" style="margin-bottom:4px">Manage posts</div><div class="admin-section-sub">Your published work, in one calm place.</div></div>
+          <div class="admin-post-head-actions"><button class="admin-secondary-btn" onclick="openStoryCreate()">＋ Story</button><button class="admin-primary-btn" onclick="openCreatePost()">＋ New post</button></div>
         </div>
-        <div class="admin-section-sub">Edit, delete, or reorder Mush posts</div>
+        <div class="admin-posts-toolbar">
+          <label class="admin-search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input id="adminPostSearch" type="search" placeholder="Search posts, locations, tags..." oninput="renderAdminPosts()"></label>
+          <select id="adminPostFilter" class="admin-filter-select" onchange="renderAdminPosts()"><option value="all">All posts</option><option value="story">With stories</option><option value="residential">Residential</option><option value="commercial">Commercial</option><option value="recent">Newest first</option></select>
+          <div class="admin-post-count" id="adminPostCount"></div>
+        </div>
         <div class="admin-posts-grid" id="adminPostsGrid"></div>
       </div>
 
@@ -538,6 +576,8 @@
 
 <!-- TOAST -->
 <div id="toast"><span id="toast-icon">✦</span><span id="toast-msg"></span></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="js/supabase-config.js"></script>
 <script src="js/data.js"></script>
 <script src="js/app.js"></script>
 <script>

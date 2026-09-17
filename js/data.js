@@ -553,12 +553,19 @@ const POSTS = Object.fromEntries(
   })
 );
 
+const PROJECT_STYLES = {
+  'anna-nagar': ['Modern', 'Contemporary', 'Traditional'],
+  'nathans-home': ['Industrial', 'Modern', 'Biophilic'],
+  'la-perle': ['Contemporary', 'Luxury', 'Modern']
+};
+
 const mushData = Object.values(POSTS)
   .filter(post => post.type === 'project')
   .sort((a,b) => Number(a.project.id || 0) - Number(b.project.id || 0))
   .map(post => ({
     ...post,
     ...post.project,
+    styles: PROJECT_STYLES[post.id] || [],
     loc: post.project.location,
     desc: post.project.description,
     bg: post.project.background,

@@ -322,3 +322,21 @@ js/app.js
 ```
 
 If you want a new type of visual component or a change to how every carousel behaves, that is an engine/design change and should be handled separately.
+# Supabase backend
+
+The browser uses the publishable Supabase key in `js/supabase-config.js`; no
+service-role key belongs in this repository. Run `supabase-schema.sql` in the
+Supabase SQL editor, then add the first administrator with:
+
+```sql
+insert into public.admin_users (user_id)
+values ('AUTH_USER_UUID');
+```
+
+Create that user in Supabase Authentication. The admin login uses
+`signInWithPassword`, restores sessions on refresh, and checks `admin_users`
+before opening the dashboard. Published posts and unexpired stories load from
+Supabase, while the bundled `js/data.js` content remains the offline fallback.
+Comments and contact messages are written to Supabase and retained in the
+existing local archive if the network is unavailable. RLS policies protect
+drafts, admin data, and notifications.

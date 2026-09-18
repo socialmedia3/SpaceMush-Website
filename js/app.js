@@ -133,7 +133,9 @@ function archiveMerged(key,liveList){
   var byId={};
   archived.forEach(function(item){ byId[item.id]=item; });
   liveList.forEach(function(item){ byId[item.id]=item; });
-  return Object.values(byId).sort(function(a,b){return b.id-a.id;});
+  return Object.values(byId).sort(function(a,b){
+    return new Date(b.created_at||b.time||0)-new Date(a.created_at||a.time||0);
+  });
 }
 
 // Notifications array
@@ -147,6 +149,94 @@ let allComments=[];
 
 // "Reach Us" contact form submissions (shown only in admin panel)
 let reachUsMessages=[];
+
+// ── SUPABASE DATA ACCESS ─────────────────────────────────────
+// The bundled data remains the offline fallback. Supabase is only used when
+// the publishable client is configured and RLS permits the requested action.
+function hasSupabase(){
+  return typeof supabaseClient!=='undefined' && supabaseClient && supabaseClient.from;
+}
+function remotePostIndex(postId,postKey){
+  return mushData.findIndex(function(post){
+    return post.supabaseId===postId || post.supabaseId===postKey || post.handle===postKey;
+  });
+}
+function dbPostToProject(row){
+  var c=row.content||{}, images=Array.isArray(c.images)?c.images:[];
+  return Object.assign({
+    id:row.id, title:row.title, handle:row.handle, loc:row.location||'Chennai',
+    location:row.location||'Chennai', caption:row.caption||'', images:images,
+    likes:0, comments:0, hasStory:false, times:row.created_at||'',
+    type:row.category||'Residential', category:row.category||'residential'
+  },c,{id:row.id,title:row.title,handle:row.handle,loc:row.location||c.loc||'Chennai',images:images});
+}
+function applyRemotePost(row){
+  var project=dbPostToProject(row);
+  project.supabaseId=row.id;
+  project.published=row.published;
+  var idx=mushData.findIndex(function(p){return p.supabaseId===row.id;});
+  if(idx<0){ mushData.push(project); idx=mushData.length-1; }
+  else mushData[idx]=Object.assign({},mushData[idx],project);
+  runtimeProjectPosts=runtimeProjectPosts.filter(function(p){return p.supabaseId!==row.id;});
+  runtimeProjectPosts.push({type:'project',author:{name:row.handle||'spacemush_architects_chennai',avatar:'SM'},
+    caption:row.caption||'',hashtags:project.hashtags||[],project:project,supabaseId:row.id,
+    runtimeKey:'supabase-'+row.id,postType:'project',feedInsertBefore:'top'});
+}
+async function loadSupabaseContent(){
+  if(!hasSupabase()) return;
+  try{
+    var posts=await supabaseClient.from('posts').select('*').eq('published',true).order('created_at',{ascending:false});
+    if(!posts.error) (posts.data||[]).forEach(applyRemotePost);
+    var stories=await supabaseClient.from('stories').select('*').eq('published',true).gt('expires_at',new Date().toISOString());
+    if(!stories.error) (stories.data||[]).forEach(function(s){
+      var p=mushData.find(function(x){return x.supabaseId===s.post_id;});
+      if(p){p.hasStory=true;p.storyCaption=s.caption||p.storyCaption;p.images=(s.image_url?[s.image_url]:p.images);}
+    });
+    renderFeed(); renderStories(); renderProjectsGrid();
+  }catch(error){ console.warn('Supabase public content unavailable; using bundled data.',error); }
+}
+async function loadSupabaseAdminData(){
+  if(!hasSupabase()||!adminLoggedIn) return;
+  try{
+    var c=await supabaseClient.from('comments').select('*').order('created_at',{ascending:false}).limit(500);
+    if(!c.error) allComments=(c.data||[]).map(function(x){
+      var postIndex=remotePostIndex(x.post_id,x.post_key);
+      return {id:x.id,user:x.user_name,verified:x.verified,profession:x.profession||'',text:x.text,time:x.created_at,mushIdx:postIndex,mushHandle:x.post_key||''};
+    });
+    var r=await supabaseClient.from('reach_us_messages').select('*').order('created_at',{ascending:false}).limit(500);
+    if(!r.error) reachUsMessages=(r.data||[]).map(function(x){return {id:x.id,name:x.name,phone:x.phone,email:x.email,budget:x.budget,message:x.message,source:x.source,read:x.read,time:x.created_at};});
+    var n=await supabaseClient.from('notifications').select('*').order('created_at',{ascending:false}).limit(500);
+    if(!n.error) notifications=(n.data||[]).map(function(x){return {id:x.id,type:x.type,user:x.user_name,avatar:x.avatar||'SM',text:x.text,unread:x.unread,time:x.created_at,mushIdx:-1};});
+    updateBadges(); renderAdminComments(); renderAdminReachUs(); renderAdminNotifications();
+  }catch(error){ console.warn('Supabase admin data unavailable; using local archive.',error); }
+}
+async function persistNotification(n){
+  if(!hasSupabase()||!adminLoggedIn) return;
+  try{ await supabaseClient.from('notifications').insert({type:n.type,user_name:n.user,avatar:n.avatar,text:n.text,unread:true,post_key:n.mushIdx>=0?String(n.mushIdx):null}); }catch(e){}
+}
+function persistProjectPost(project){
+  if(!hasSupabase()||!adminLoggedIn) return;
+  var row={slug:'runtime-'+String(project.handle||'post').toLowerCase().replace(/[^a-z0-9]+/g,'-')+'-'+Date.now(),
+    title:project.title||project.handle,handle:project.handle||'spacemush_architects_chennai',
+    subtitle:project.loc||'Chennai',caption:project.caption||'',location:project.loc||'Chennai',
+    category:project.category||'residential',post_type:'project',content:project,published:true};
+  if(project.supabaseId){
+    delete row.slug;
+    supabaseClient.from('posts').update(row).eq('id',project.supabaseId).then(function(result){
+      if(result.error) console.warn('Post update was kept locally:',result.error.message);
+    });
+    return;
+  }
+  supabaseClient.auth.getUser().then(function(auth){
+    var user=auth.data&&auth.data.user;
+    if(!user) throw new Error('No signed-in administrator');
+    row.created_by=user.id;
+    return supabaseClient.from('posts').insert(row).select().single();
+  }).then(function(result){
+    if(result.error){console.warn('Post was kept locally:',result.error.message);return;}
+    if(result.data){project.supabaseId=result.data.id;applyRemotePost(result.data);}
+  }).catch(function(error){ console.warn('Post was kept locally:',error.message); });
+}
 
 // ============================================================
 // INIT
@@ -264,6 +354,7 @@ function init(){
   try { updateFollowerDisplay(); } catch(e) { console.error('Follower init error:', e); }
   try { updateUserUI(); } catch(e) { console.error('User UI init error:', e); }
   restoreSupabaseAdminSession();
+  loadSupabaseContent();
   // Normal hide after a short, intentional splash. A separate failsafe script
   // below also removes it if any unexpected runtime issue occurs.
   setTimeout(hideSplashScreen, 1100);
@@ -789,10 +880,10 @@ function buildPostCard(m,i){
       <button style="display:flex;width:100%;align-items:center;gap:8px;padding:10px 14px;font-size:13.5px;color:#991b1b;border:none;background:transparent;cursor:pointer" onclick="deleteMush(${i});closeMenu(${i})">🗑️ Delete</button>
     </div>`:''
   ;
-  const commentBox=studioLoggedIn?`
+  const commentBox=(studioLoggedIn||loggedInUser)?`
     <div class="comment-box">
-      <div class="comment-user-avatar">😊</div>
-      <input class="comment-input" placeholder="Reply as SpaceMush Studio…" oninput="togglePostBtn(this,'postBtn${i}')" id="commentInput${i}">
+      <div class="comment-user-avatar">${studioLoggedIn?'SM':(loggedInUser.name||'V')[0].toUpperCase()}</div>
+      <input class="comment-input" placeholder="Reply as ${studioLoggedIn?'SpaceMush Studio':loggedInUser.name||'Visitor'}…" oninput="togglePostBtn(this,'postBtn${i}')" id="commentInput${i}">
       <button class="comment-post-btn" id="postBtn${i}" onclick="postComment(${i})">Post</button>
     </div>`:''
   ;
@@ -1224,7 +1315,23 @@ function commitComment(i,txt){
     toast('💬 Posted as SpaceMush Studio!');
     return true;
   }
-  return false;
+  var user=loggedInUser;
+  if(!user){ toast('🔐 Please sign in to comment'); return false; }
+  mushData[i].comments=(mushData[i].comments||0)+1;
+  injectFeedComment(i,user.name||'Visitor',txt,!!user.verified,user.profession||'');
+  if(hasSupabase()) supabaseClient.from('comments').insert({
+    post_id:mushData[i].supabaseId||null,
+    post_key:mushData[i].supabaseId||mushData[i].handle,
+    user_name:user.name||'Visitor',
+    user_email:user.email||null,
+    text:txt,
+    verified:false,
+    profession:''
+  }).then(function(result){
+    if(result.error) console.warn('Comment was kept locally:',result.error.message);
+  });
+  toast('💬 Comment posted!');
+  return true;
 }
 
 function injectFeedComment(i,user,text,verified,profession){
@@ -1249,6 +1356,10 @@ function injectFeedComment(i,user,text,verified,profession){
   allComments.unshift(newComment);
   // Also archive it so admin still sees it after this visitor's tab/session ends
   archiveAdd('comments',newComment);
+  if(hasSupabase()&&studioLoggedIn) supabaseClient.from('comments').insert({
+    post_id:mushData[i].supabaseId||null,post_key:mushData[i].handle,user_name:user||'SpaceMush Studio',
+    text:text,verified:!!verified,profession:profession||''
+  }).catch(function(){});
 }
 
 // ============================================================
@@ -1358,6 +1469,7 @@ function addNotification(n){
   n.unread=true;
   notifications.unshift(n);
   archiveAdd('notifications',n);
+  persistNotification(n);
   updateBadges();
 }
 
@@ -1642,6 +1754,7 @@ function publishMush(){
       likes:mushData[currentEditIndex].likes,
       comments:mushData[currentEditIndex].comments,
     });
+    persistProjectPost(mushData[currentEditIndex]);
     addNotification({type:'edit',user:'Studio',avatar:'SM',text:`Post <b>${handle}</b> was updated by Studio`,time:'just now',mushIdx:currentEditIndex,thumb:previewEmoji});
     toast('✅ Mush post updated!');
   } else {
@@ -1656,6 +1769,7 @@ function publishMush(){
       feedInsertBefore:(el('cp-feed-position')||{}).value||'top',
       postType:'project'
     });
+    persistProjectPost(newMush);
     addNotification({type:'new',user:'Studio',avatar:'SM',text:`New post published: <b>${handle}</b>`,time:'just now',mushIdx:mushData.length-1,thumb:previewEmoji});
     if(newMush.hasStory){
       addNotification({type:'story',user:'Studio',avatar:'SM',text:`Story auto-posted for <b>${handle}</b>`,time:'just now',mushIdx:mushData.length-1,thumb:previewEmoji});
@@ -1677,6 +1791,8 @@ function tagToCategory(tag){
 
 function deleteMush(i){
   if(!confirm(`Delete ${mushData[i].handle}? This cannot be undone.`)) return;
+  var removed=mushData[i];
+  if(hasSupabase()&&adminLoggedIn&&removed&&removed.supabaseId) supabaseClient.from('posts').delete().eq('id',removed.supabaseId).catch(function(){});
   mushData.splice(i,1);
   renderFeed();
   renderStories();
@@ -1719,6 +1835,17 @@ function publishStory(){
     if(!isNaN(linkedMushIdx)&&mushData[linkedMushIdx]){
       mushData[linkedMushIdx].hasStory=true;
       mushData[linkedMushIdx].storyCaption=caption;
+    }
+    if(hasSupabase()&&adminLoggedIn){
+      var linked=linkedMushIdx>=0?mushData[linkedMushIdx]:null;
+      supabaseClient.auth.getUser().then(function(auth){
+        var uid=auth.data&&auth.data.user&&auth.data.user.id;
+        if(!uid) return;
+        return supabaseClient.from('stories').insert({
+          post_id:linked&&linked.supabaseId||null,caption:caption,visual:document.getElementById('st-emoji').value||'✨',
+          story_type:type,published:true,created_by:uid
+        });
+      }).catch(function(error){console.warn('Story was kept locally:',error.message);});
     }
   }
   addNotification({type:'story',user:'Studio',avatar:'SM',
@@ -1783,7 +1910,7 @@ function openProject(i){
   var pmlImg=document.getElementById('pmlImg');
   if(!pmlImg) return;
   var commentRow=el('pmrCommentInputRow');
-  if(commentRow) commentRow.style.display=studioLoggedIn?'flex':'none';
+  if(commentRow) commentRow.style.display=(studioLoggedIn||loggedInUser)?'flex':'none';
   modalImgIdx=0;
   renderModalCarousel(i);
   set('pmlTag','textContent',m.tag);
@@ -1894,7 +2021,7 @@ function submitStudioLogin(){
 }
 
 async function restoreSupabaseAdminSession(){
-  if(typeof supabaseClient==='undefined') return;
+  if(!hasSupabase()) return;
   try{
     var result=await supabaseClient.auth.getSession();
     if(result.data&&result.data.session) await setSupabaseAdminSession(result.data.session);
@@ -1946,11 +2073,12 @@ function closeAuthModal(e){
 function openAdminPanel(){
   if(!studioLoggedIn){ openAdminLogin(); return; }
   launchAdminPanel((loggedInUser&&loggedInUser.email)||'spacemush2026@gmail.com');
+  loadSupabaseAdminData();
 }
 
 async function submitAdminLogin(event){
   if(event) event.preventDefault();
-  if(typeof supabaseClient==='undefined'){ toast('Supabase is not available.'); return; }
+  if(!hasSupabase()){ toast('Supabase is not available.'); return; }
   var email=(el('adminLoginEmail')||{}).value||'';
   var password=(el('adminLoginPassword')||{}).value||'';
   var result=await supabaseClient.auth.signInWithPassword({email:email.trim(),password:password});
@@ -1960,8 +2088,8 @@ async function submitAdminLogin(event){
   removeClass('adminLoginOverlay','open');
   document.body.style.overflow='';
   launchAdminPanel(email.trim());
+  loadSupabaseAdminData();
 }
-
 function launchAdminPanel(userLabel){
   var lbl=el('adminUserLabel');
   if(lbl) lbl.textContent=userLabel;
@@ -2140,6 +2268,9 @@ function markAllNotifsRead(){
   var archived=loadAdminArchive('notifications');
   archived.forEach(function(n){n.unread=false;});
   saveAdminArchive('notifications',archived);
+  if(hasSupabase()&&adminLoggedIn) supabaseClient.from('notifications').update({unread:false}).eq('unread',true).then(function(result){
+    if(result.error) console.warn('Could not mark notifications read:',result.error.message);
+  });
   updateBadges();
   renderAdminNotifications();
   renderNotifPanel();
@@ -2151,6 +2282,9 @@ function markNotifRead(id){
   var archived=loadAdminArchive('notifications');
   var an=archived.find(function(x){return x.id===id;});
   if(an){ an.unread=false; saveAdminArchive('notifications',archived); }
+  if(hasSupabase()&&adminLoggedIn&&typeof id==='string') supabaseClient.from('notifications').update({unread:false}).eq('id',id).then(function(result){
+    if(result.error) console.warn('Could not mark notification read:',result.error.message);
+  });
   updateBadges();
   renderAdminNotifications();
 }
@@ -2447,14 +2581,17 @@ function renderAdminComments(){
       '<td>'+verifiedBadge+'</td>'+
       '<td style="font-size:12px;color:var(--text3)">'+c.mushHandle+'</td>'+
       '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">'+c.text+'</td>'+
-      '<td><button class="admin-action-btn reject" style="white-space:nowrap" onclick="removeComment('+c.id+')">Remove</button></td>'+
+      '<td><button class="admin-action-btn reject" style="white-space:nowrap" onclick="removeComment('+JSON.stringify(String(c.id))+')">Remove</button></td>'+
     '</tr>';
   }).join('');
 }
 
 function removeComment(id){
-  allComments=allComments.filter(function(c){return c.id!==id;});
+  allComments=allComments.filter(function(c){return String(c.id)!==String(id);});
   archiveRemove('comments',id);
+  if(hasSupabase()&&adminLoggedIn&&typeof id==='string') supabaseClient.from('comments').delete().eq('id',id).then(function(result){
+    if(result.error) console.warn('Could not remove comment:',result.error.message);
+  });
   renderAdminComments();
   toast('🗑️ Comment removed');
 }
@@ -2469,6 +2606,9 @@ function renderAdminReachUs(){
   var archived=loadAdminArchive('reachus');
   archived.forEach(function(m){ m.read=true; });
   saveAdminArchive('reachus',archived);
+  if(hasSupabase()&&adminLoggedIn) supabaseClient.from('reach_us_messages').update({read:true}).eq('read',false).then(function(result){
+    if(result.error) console.warn('Could not mark messages read:',result.error.message);
+  });
   updateBadges();
   var merged=archiveMerged('reachus',reachUsMessages);
   if(!merged.length){
@@ -2494,14 +2634,17 @@ function renderAdminReachUs(){
       '<div class="verif-actions" style="flex-direction:column;gap:6px">'+
         (m.phone?'<button class="admin-action-btn approve" style="padding:7px 14px;white-space:nowrap" onclick="window.open(\'https://wa.me/'+m.phone.replace(/[^0-9]/g,'')+'\',\'_blank\')">💬 WhatsApp</button>':'')+
         (m.email?'<button class="admin-action-btn" style="padding:7px 14px;white-space:nowrap;background:var(--bg2);color:var(--text);border:1px solid var(--border)" onclick="window.location.href=\'mailto:'+m.email+'\'">✉️ Email</button>':'')+
-        '<button class="admin-action-btn reject" style="padding:7px 14px;white-space:nowrap" onclick="removeReachUsMessage('+m.id+')">Remove</button>'+
+        '<button class="admin-action-btn reject" style="padding:7px 14px;white-space:nowrap" onclick="removeReachUsMessage('+JSON.stringify(String(m.id))+')">Remove</button>'+
       '</div>'+
     '</div>';
   }).join('');
 }
 function removeReachUsMessage(id){
-  reachUsMessages=reachUsMessages.filter(function(m){return m.id!==id;});
+  reachUsMessages=reachUsMessages.filter(function(m){return String(m.id)!==String(id);});
   archiveRemove('reachus',id);
+  if(hasSupabase()&&adminLoggedIn&&typeof id==='string') supabaseClient.from('reach_us_messages').delete().eq('id',id).then(function(result){
+    if(result.error) console.warn('Could not remove message:',result.error.message);
+  });
   renderAdminReachUs();
   toast('🗑️ Message removed');
 }
@@ -2629,6 +2772,10 @@ function addReachUsMessage(msg){
   msg.id=Date.now();
   reachUsMessages.unshift(msg);
   archiveAdd('reachus',msg);
+  if(hasSupabase()) supabaseClient.from('reach_us_messages').insert({
+    name:msg.name,phone:msg.phone||null,email:msg.email||null,budget:msg.budget||null,
+    message:msg.message,source:msg.source||'Website contact form',read:false
+  }).then(function(result){if(result.error) console.warn('Message was kept locally:',result.error.message);});
   updateBadges();
 }
 

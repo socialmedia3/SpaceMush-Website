@@ -36,6 +36,43 @@ create table if not exists public.stories (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.comments (
+  id uuid primary key default gen_random_uuid(),
+  post_id uuid references public.posts(id) on delete cascade,
+  post_key text,
+  user_id uuid references auth.users(id) on delete set null,
+  user_name text not null,
+  user_email text,
+  text text not null,
+  verified boolean not null default false,
+  profession text,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.reach_us_messages (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  phone text,
+  email text,
+  budget text,
+  message text not null,
+  source text,
+  read boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.notifications (
+  id uuid primary key default gen_random_uuid(),
+  type text not null default 'new',
+  user_name text,
+  avatar text,
+  text text not null,
+  post_id uuid references public.posts(id) on delete cascade,
+  post_key text,
+  unread boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
 create or replace function public.is_admin()
 returns boolean
 language sql
@@ -53,11 +90,17 @@ grant execute on function public.is_admin() to anon, authenticated;
 
 grant select on public.posts, public.stories to anon, authenticated;
 grant insert, update, delete on public.posts, public.stories to authenticated;
-grant select, insert, update, delete on public.admin_users to authenticated;
+grant select on public.admin_users to authenticated;
+grant insert on public.comments, public.reach_us_messages to anon, authenticated;
+grant select, delete on public.comments, public.reach_us_messages to authenticated;
+grant select, insert, update, delete on public.notifications to authenticated;
 
 alter table public.admin_users enable row level security;
 alter table public.posts enable row level security;
 alter table public.stories enable row level security;
+alter table public.comments enable row level security;
+alter table public.reach_us_messages enable row level security;
+alter table public.notifications enable row level security;
 
 drop policy if exists "admins can read own admin record" on public.admin_users;
 create policy "admins can read own admin record"
@@ -79,6 +122,33 @@ create policy "admins can update posts"
 on public.posts for update to authenticated
 using ((select public.is_admin()))
 with check ((select public.is_admin()));
+
+drop policy if exists "public can read comments" on public.comments;
+drop policy if exists "admins can read comments" on public.comments;
+create policy "admins can read comments" on public.comments for select to authenticated using ((select public.is_admin()));
+drop policy if exists "visitors can add comments" on public.comments;
+create policy "visitors can add comments" on public.comments for insert to anon, authenticated
+with check (length(trim(text)) between 1 and 2000 and verified = false and user_id is null);
+drop policy if exists "admins can add comments" on public.comments;
+create policy "admins can add comments" on public.comments for insert to authenticated
+with check ((select public.is_admin()));
+drop policy if exists "admins can delete comments" on public.comments;
+create policy "admins can delete comments" on public.comments for delete to authenticated using ((select public.is_admin()));
+
+drop policy if exists "visitors can send reach us messages" on public.reach_us_messages;
+create policy "visitors can send reach us messages" on public.reach_us_messages for insert to anon, authenticated
+with check (length(trim(name)) between 1 and 200 and length(trim(message)) between 1 and 5000);
+drop policy if exists "admins can read reach us messages" on public.reach_us_messages;
+create policy "admins can read reach us messages" on public.reach_us_messages for select to authenticated using ((select public.is_admin()));
+drop policy if exists "admins can update reach us messages" on public.reach_us_messages;
+drop policy if exists "admins can update reach_us messages" on public.reach_us_messages;
+create policy "admins can update reach us messages" on public.reach_us_messages for update to authenticated using ((select public.is_admin())) with check ((select public.is_admin()));
+drop policy if exists "admins can delete reach us messages" on public.reach_us_messages;
+create policy "admins can delete reach us messages" on public.reach_us_messages for delete to authenticated using ((select public.is_admin()));
+
+drop policy if exists "admins can manage notifications" on public.notifications;
+create policy "admins can manage notifications" on public.notifications for all to authenticated
+using ((select public.is_admin())) with check ((select public.is_admin()));
 
 drop policy if exists "admins can delete posts" on public.posts;
 create policy "admins can delete posts"

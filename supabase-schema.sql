@@ -18,6 +18,7 @@ create table if not exists public.posts (
   post_type text not null default 'project',
   content jsonb not null default '{}'::jsonb,
   published boolean not null default false,
+  is_archived boolean not null default false,
   created_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -25,16 +26,30 @@ create table if not exists public.posts (
 
 create table if not exists public.stories (
   id uuid primary key default gen_random_uuid(),
-  post_id uuid references public.posts(id) on delete set null,
+  post_id uuid references public.posts(id) on delete cascade,
   caption text,
   image_url text,
   visual text,
   story_type text not null default 'general',
   published boolean not null default false,
+  is_archived boolean not null default false,
   expires_at timestamptz not null default (now() + interval '24 hours'),
   created_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default now()
 );
+
+-- These ALTERs make the script safe to run on a project where the original
+-- tables were created before lifecycle state was introduced.
+alter table public.posts add column if not exists is_archived boolean not null default false;
+alter table public.stories add column if not exists is_archived boolean not null default false;
+alter table public.stories drop constraint if exists stories_post_id_fkey;
+alter table public.stories
+  add constraint stories_post_id_fkey foreign key (post_id)
+  references public.posts(id) on delete cascade;
+create index if not exists posts_public_feed_idx
+  on public.posts (published, is_archived, created_at desc);
+create index if not exists stories_active_post_idx
+  on public.stories (post_id, published, is_archived, expires_at desc);
 
 create table if not exists public.comments (
   id uuid primary key default gen_random_uuid(),
@@ -88,6 +103,41 @@ $$;
 
 grant execute on function public.is_admin() to anon, authenticated;
 
+-- One transactional lifecycle operation keeps every Story linked to a Post
+-- synchronized. A post delete relies on the FK cascade above; archive changes
+-- only lifecycle state, never created_at (the feed-order field).
+create or replace function public.manage_post_lifecycle(p_post_id uuid, p_action text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_admin() then
+    raise exception 'Administrator access is required';
+  end if;
+
+  if p_action = 'delete' then
+    delete from public.posts where id = p_post_id;
+    if not found then raise exception 'Post not found'; end if;
+  elsif p_action in ('archive', 'unarchive') then
+    update public.posts
+      set is_archived = (p_action = 'archive')
+      where id = p_post_id;
+    if not found then raise exception 'Post not found'; end if;
+    update public.stories
+      set is_archived = (p_action = 'archive')
+      where post_id = p_post_id;
+  else
+    raise exception 'Unsupported lifecycle action: %', p_action;
+  end if;
+
+  return jsonb_build_object('post_id', p_post_id, 'action', p_action);
+end;
+$$;
+
+grant execute on function public.manage_post_lifecycle(uuid, text) to authenticated;
+
 grant select on public.posts, public.stories to anon, authenticated;
 grant insert, update, delete on public.posts, public.stories to authenticated;
 grant select on public.admin_users to authenticated;
@@ -110,7 +160,7 @@ using ((select auth.uid()) = user_id);
 drop policy if exists "public can read published posts" on public.posts;
 create policy "public can read published posts"
 on public.posts for select to anon, authenticated
-using (published = true or (select public.is_admin()));
+using ((published = true and is_archived = false) or (select public.is_admin()));
 
 drop policy if exists "admins can create posts" on public.posts;
 create policy "admins can create posts"
@@ -158,7 +208,14 @@ using ((select public.is_admin()));
 drop policy if exists "public can read active stories" on public.stories;
 create policy "public can read active stories"
 on public.stories for select to anon, authenticated
-using ((published = true and expires_at > now()) or (select public.is_admin()));
+using (
+  (published = true and is_archived = false and expires_at > now()
+    and (post_id is null or exists (
+      select 1 from public.posts
+      where posts.id = stories.post_id and posts.published = true and posts.is_archived = false
+    )))
+  or (select public.is_admin())
+);
 
 drop policy if exists "admins can create stories" on public.stories;
 create policy "admins can create stories"

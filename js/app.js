@@ -799,10 +799,13 @@ function togglePostKindFields(){
 
 function registerGeneralPost(post){
   var key='runtime-general-'+generalPosts.length;
-  infoPosts[key]={idx:0,slides:post.images.map(function(src,index){
-    return {inner:'<div class="info-slide-media"><img src="'+src+'" alt="'+post.handle+' image '+(index+1)+'" loading="lazy" draggable="false"></div>'};
+  var slides=post.images.map(function(src,index){
+    return {type:'image',src:src,alt:post.handle+' image '+(index+1)};
+  });
+  infoPosts[key]={idx:0,slides:slides.map(function(slide){
+    return {inner:'<div class="info-slide-media"><img src="'+slide.src+'" alt="'+slide.alt+'" loading="lazy" draggable="false"></div>'};
   })};
-  generalPosts.push({type:'carousel',author:{name:post.handle,avatar:'SM'},subtitle:post.subtitle||post.loc||'SpaceMush Studio',caption:post.caption,images:post.images.slice(),hashtags:[],slides:infoPosts[key].slides,key:key,runtimeKey:key,feedInsertBefore:post.feedInsertBefore||'top',postType:'general'});
+  generalPosts.push({type:'carousel',author:{name:post.handle,avatar:'SM'},loc:post.loc||'SpaceMush Studio',subtitle:post.subtitle||post.loc||'SpaceMush Studio',caption:post.caption,images:post.images.slice(),hashtags:[],slides:slides,key:key,runtimeKey:key,feedInsertBefore:post.feedInsertBefore||'top',postType:'general'});
   return key;
 }
 
@@ -1589,10 +1592,11 @@ function openCreatePost(editIndex){
     var source=(typeof POSTS!=='undefined'&&POSTS[currentEditGeneralKey])||general;
     if(source){
       document.getElementById('cp-general-title').value=source.handle||source.author&&source.author.name||currentEditGeneralKey;
-      document.getElementById('cp-general-label').value=source.subtitle||'SpaceMush Studio';
+      document.getElementById('cp-general-label').value=source.loc||source.subtitle||'SpaceMush Studio';
       document.getElementById('cp-general-subtitle').value=source.subtitle||'';
       document.getElementById('cp-caption').value=source.caption||'';
       selectedPostImages=(source.images||((source.slides||[]).filter(function(slide){return slide.type==='image';}).map(function(slide){return slide.src;}))).slice();
+      if(el('cp-feed-position')) el('cp-feed-position').value=source.feedInsertBefore||'top';
       renderPostImagePreviews();
     }
   } else if(isEdit){
@@ -1745,7 +1749,11 @@ function publishMush(){
   const postKind=(document.getElementById('cp-post-kind')||{}).value||'project';
   const handle=document.getElementById('cp-handle').value.trim();
   if(postKind==='general'){
-    if(!selectedPostImages.length){toast('⚠️ Select at least one carousel image');return;}
+    var editingGeneral=currentEditGeneralKey!==null;
+    var existingGeneralSource=editingGeneral
+      ? ((typeof POSTS!=='undefined'&&POSTS[currentEditGeneralKey])||generalPosts.find(function(post){return post.key===currentEditGeneralKey;}))
+      : null;
+    if(!selectedPostImages.length&&!editingGeneral){toast('⚠️ Select at least one carousel image');return;}
     var generalTitle=(el('cp-general-title')||{}).value.trim()||handle;
     if(!generalTitle){toast('⚠️ Enter a topic or title for this post');return;}
     var generalLabel=(el('cp-general-label')||{}).value.trim()||'SpaceMush Studio';
@@ -1753,20 +1761,52 @@ function publishMush(){
     var general={handle:generalTitle,loc:generalLabel,subtitle:generalSubtitle,caption:document.getElementById('cp-caption').value||'A new SpaceMush update is live.',images:selectedPostImages.slice(),feedInsertBefore:(el('cp-feed-position')||{}).value||'top'};
     if(currentEditGeneralKey!==null){
       var runtimeGeneral=generalPosts.find(function(post){return post.key===currentEditGeneralKey;});
+      var originalSlides=(existingGeneralSource&&existingGeneralSource.slides)||[];
+      var imageIndex=0;
+      var updatedSlides=originalSlides.reduce(function(slides,slide){
+        if(slide.type!=='image'){
+          slides.push(slide);
+        }else if(imageIndex<general.images.length){
+          var updatedSlide=Object.assign({},slide,{src:general.images[imageIndex],alt:general.handle+' image '+(imageIndex+1)});
+          slides.push(updatedSlide);
+          imageIndex++;
+        }else{
+          imageIndex++;
+        }
+        return slides;
+      },[]);
+      while(imageIndex<general.images.length){
+        updatedSlides.push({type:'image',src:general.images[imageIndex],alt:general.handle+' image '+(imageIndex+1)});
+        imageIndex++;
+      }
       if(runtimeGeneral){
         runtimeGeneral.handle=general.handle;
+        runtimeGeneral.author.name=general.handle;
+        runtimeGeneral.loc=general.loc;
         runtimeGeneral.subtitle=general.subtitle;
         runtimeGeneral.caption=general.caption;
         runtimeGeneral.images=general.images.slice();
+        runtimeGeneral.slides=updatedSlides;
+        runtimeGeneral.feedInsertBefore=general.feedInsertBefore;
       }
       var existingGeneral=(typeof POSTS!=='undefined'&&POSTS[currentEditGeneralKey]);
       if(existingGeneral){
         existingGeneral.handle=general.handle;
+        existingGeneral.author.name=general.handle;
+        existingGeneral.loc=general.loc;
         existingGeneral.subtitle=general.subtitle;
         existingGeneral.caption=general.caption;
-        existingGeneral.slides=general.images.map(function(src,index){return {type:'image',src:src,alt:general.handle+' image '+(index+1)};});
-        infoPosts[currentEditGeneralKey]={idx:0,slides:existingGeneral.slides.map(function(slide){return {inner:'<div class="info-slide-media"><img src="'+slide.src+'" alt="'+slide.alt+'" loading="lazy" draggable="false"></div>'};})};
+        existingGeneral.images=general.images.slice();
+        existingGeneral.slides=updatedSlides;
+        existingGeneral.feedInsertBefore=general.feedInsertBefore;
       }
+      infoPosts[currentEditGeneralKey]={idx:0,slides:updatedSlides.map(function(slide,index){
+        if(slide.type==='image'){
+          return {inner:'<div class="info-slide-media"><img src="'+slide.src+'" alt="'+(slide.alt||general.handle+' image '+(index+1))+'" loading="lazy" draggable="false"></div>',formVariant:!!slide.formVariant,theme:slide.theme||''};
+        }
+        if(slide.type==='html') return {inner:slide.html||'',formVariant:!!slide.formVariant,theme:slide.theme||''};
+        return {inner:'<div class="info-slide-icon">'+(slide.icon||'')+'</div><div class="info-slide-heading">'+(slide.heading||'')+'</div><div class="info-slide-body">'+(slide.bodyHtml||'')+'</div>',formVariant:!!slide.formVariant,theme:slide.theme||''};
+      })};
       currentEditGeneralKey=null;
       closeCreatePost();
       renderFeed();
@@ -1881,6 +1921,7 @@ function closeCreatePost(e){
   if(!e||e.target===document.getElementById('createPostOverlay')){
     removeClass('createPostOverlay','open');
     document.body.style.overflow='';
+    currentEditGeneralKey=null;
   }
 }
 
@@ -2576,7 +2617,8 @@ function renderAdminPosts(){
   });
   if(filter==='recent') visiblePosts.reverse();
   var count=el('adminPostCount');
-  if(count) count.textContent=visiblePosts.length+' of '+mushData.length+' posts';
+  var totalPosts=mushData.length+archivedRemotePosts.length+existingGeneralPosts.length+generalPosts.length;
+  if(count) count.textContent=visiblePosts.length+' of '+totalPosts+' posts';
   if(!visiblePosts.length){
     apg.innerHTML='<div class="admin-posts-empty"><div class="admin-empty-mark">⌁</div><strong>No posts found</strong><span>Try a different search or create something new.</span></div>';
     return;
@@ -2599,8 +2641,9 @@ function renderAdminPosts(){
       '</div>'+
       '<div class="admin-post-actions">'+
         (entry.kind==='project'&&index>=0?'<button class="admin-action-btn edit" onclick="openEditPost('+index+')">Edit post <span>→</span></button>':'')+
+        (entry.kind!=='project'?'<button class="admin-action-btn edit" onclick="openEditGeneralPost(\''+entryKey+'\')">Edit post <span>→</span></button>':'')+
         '<button class="admin-icon-action archive" '+(pending?'disabled':'')+' aria-label="'+(archived?'Unarchive':'Archive')+' post" title="'+(pending?'Working…':(archived?'Unarchive':'Archive')+' post')+'" onclick="adminToggleArchive(\''+entryKey+'\')">'+(archived?'↥':'▱')+'</button>'+
-        (entry.kind==='project'?(index>=0?'<button class="admin-icon-action delete" '+(pending?'disabled':'')+' aria-label="Delete post" title="'+(pending?'Working…':'Delete post')+'" onclick="adminDeleteMush('+index+')">⌫</button>':(post.supabaseId?'<button class="admin-icon-action delete" '+(pending?'disabled':'')+' aria-label="Delete post" title="'+(pending?'Working…':'Delete post')+'" onclick="adminDeleteRemotePost(\''+post.supabaseId+'\',\''+(post.handle||post.title||'this post').replace(/'/g,"\\'")+'\')">⌫</button>':'')):'')+
+        (entry.kind==='project'?(index>=0?'<button class="admin-icon-action delete" '+(pending?'disabled':'')+' aria-label="Delete post" title="'+(pending?'Working…':'Delete post')+'" onclick="adminDeleteMush('+index+')">⌫</button>':(post.supabaseId?'<button class="admin-icon-action delete" '+(pending?'disabled':'')+' aria-label="Delete post" title="'+(pending?'Working…':'Delete post')+'" onclick="adminDeleteRemotePost(\''+post.supabaseId+'\',\''+(post.handle||post.title||'this post').replace(/'/g,"\\'")+'\')">⌫</button>':'')):'<button class="admin-icon-action delete" aria-label="Delete post" title="Delete post" onclick="adminDeleteGeneralPost(\''+entryKey+'\')">⌫</button>')+
       '</div>'+
     '</article>';
   }).join('');

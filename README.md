@@ -340,3 +340,9 @@ Supabase, while the bundled `js/data.js` content remains the offline fallback.
 Comments and contact messages are written to Supabase and retained in the
 existing local archive if the network is unavailable. RLS policies protect
 drafts, admin data, and notifications.
+
+Admin-created project and general carousel posts are stored in `public.posts`.
+Deleting a bundled post stores a deletion marker in `public.bundled_post_state`,
+so it stays hidden after refresh instead of returning from `js/data.js`. After
+updating the backend schema, run the full `supabase-schema.sql` script again in
+the Supabase SQL editor before using post management.

@@ -24,6 +24,13 @@ create table if not exists public.posts (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.bundled_post_state (
+  post_key text primary key,
+  is_deleted boolean not null default false,
+  updated_by uuid references auth.users(id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists public.stories (
   id uuid primary key default gen_random_uuid(),
   post_id uuid references public.posts(id) on delete cascade,
@@ -141,12 +148,15 @@ grant execute on function public.manage_post_lifecycle(uuid, text) to authentica
 grant select on public.posts, public.stories to anon, authenticated;
 grant insert, update, delete on public.posts, public.stories to authenticated;
 grant select on public.admin_users to authenticated;
+grant select on public.bundled_post_state to anon, authenticated;
+grant insert, update on public.bundled_post_state to authenticated;
 grant insert on public.comments, public.reach_us_messages to anon, authenticated;
 grant select, delete on public.comments, public.reach_us_messages to authenticated;
 grant select, insert, update, delete on public.notifications to authenticated;
 
 alter table public.admin_users enable row level security;
 alter table public.posts enable row level security;
+alter table public.bundled_post_state enable row level security;
 alter table public.stories enable row level security;
 alter table public.comments enable row level security;
 alter table public.reach_us_messages enable row level security;
@@ -204,6 +214,17 @@ drop policy if exists "admins can delete posts" on public.posts;
 create policy "admins can delete posts"
 on public.posts for delete to authenticated
 using ((select public.is_admin()));
+
+drop policy if exists "public can read bundled post state" on public.bundled_post_state;
+create policy "public can read bundled post state"
+on public.bundled_post_state for select to anon, authenticated
+using (true);
+
+drop policy if exists "admins can manage bundled post state" on public.bundled_post_state;
+create policy "admins can manage bundled post state"
+on public.bundled_post_state for all to authenticated
+using ((select public.is_admin()))
+with check ((select public.is_admin()) and (updated_by is null or updated_by = (select auth.uid())));
 
 drop policy if exists "public can read active stories" on public.stories;
 create policy "public can read active stories"

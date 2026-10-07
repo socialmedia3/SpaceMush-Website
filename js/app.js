@@ -669,7 +669,7 @@ function renderStories(){
   // Per-Mush stories
   mushData.forEach((m,i)=>{
     const grad=m.storySeen?'linear-gradient(135deg,#d0d0d0,#a8a8a8)':ringGradients[i%ringGradients.length];
-    const label=projectDisplayName(m);
+    const label=escapeHTML(projectDisplayName(m));
     html+=`<div class="story-item" onclick="viewStory(${i})">
       <div class="story-ring" style="background:${grad}">
         <div class="story-avatar">${m.emoji}</div>
@@ -875,20 +875,21 @@ function buildUniversalPostCard(post,key,position){
   const project=isProject ? post.project : null;
   const author=post.author||{};
   const title=isProject ? project.title : author.name;
-  const subtitle=isProject ? `📍 ${project.location||''}` : post.subtitle;
+  const displayTitle=isProject?escapeHTML(title):title;
+  const subtitle=isProject ? `📍 ${escapeHTML(project.location||'')}` : post.subtitle;
   const action=post.action&&post.action.onClick ? post.action.onClick : 'bookConsultationWhatsApp()';
   const media=isProject && projectIndex>=0
     ? buildCardCarousel(mushData[projectIndex],projectIndex)
     : renderInfoCarousel(key);
   const caption=isProject
-    ? `<span class="handle">${title}</span> ${post.caption||''} ${(post.hashtags||[]).map(h=>`<span class="hashtag">${h}</span>`).join(' ')}`
+    ? `<span class="handle">${displayTitle}</span> ${post.caption||''} ${(post.hashtags||[]).map(h=>`<span class="hashtag">${h}</span>`).join(' ')}`
     : post.caption||'';
   const metadata=isProject ? `
     <div class="project-feed-meta">
-      ${project.client?`<span><strong>Client</strong> ${projectClientName({client:project.client})}</span>`:''}
-      ${project.architect?`<span><strong>Architect</strong> ${project.architect}</span>`:''}
-      ${project.area?`<span><strong>Area</strong> ${project.area}</span>`:''}
-      ${project.year?`<span><strong>Year</strong> ${project.year}</span>`:''}
+      ${project.client?`<span><strong>Client</strong> ${escapeHTML(projectClientName({client:project.client}))}</span>`:''}
+      ${project.architect?`<span><strong>Architect</strong> ${escapeHTML(project.architect)}</span>`:''}
+      ${project.area?`<span><strong>Area</strong> ${escapeHTML(project.area)}</span>`:''}
+      ${project.year?`<span><strong>Year</strong> ${escapeHTML(project.year)}</span>`:''}
     </div>
     <div class="post-time">${project.times||''}</div>` : '';
   const click=isProject&&projectIndex>=0 ? `openProject(${projectIndex})` : action;
@@ -896,11 +897,11 @@ function buildUniversalPostCard(post,key,position){
     <div class="post-header">
       <div class="post-avatar-ring"><div class="post-avatar"><span class="post-avatar-label">${author.avatar||'SM'}</span></div></div>
       <div class="post-info">
-        <div class="post-handle"${isProject?` onclick="openProject(${projectIndex})" style="cursor:pointer"`:''}>${title}
+        <div class="post-handle"${isProject?` onclick="openProject(${projectIndex})" style="cursor:pointer"`:''}>${displayTitle}
           <div class="verified-badge"><svg viewBox="0 0 10 10"><polyline points="2,5 4,7 8,3" stroke="white" stroke-width="1.5" fill="none"/></svg></div>
         </div>
         <div class="post-subloc">${subtitle}</div>
-        ${isProject&&project.client?`<div class="post-client-line"><strong>Client</strong> ${projectClientName({client:project.client})}</div>`:''}
+        ${isProject&&project.client?`<div class="post-client-line"><strong>Client</strong> ${escapeHTML(projectClientName({client:project.client}))}</div>`:''}
       </div>
       ${isProject&&mushData[projectIndex].showMushBadge!==false?`<div class="mush-badge">MUSH #${mushNumber(mushData[projectIndex])}</div>`:''}
     </div>
@@ -1067,11 +1068,17 @@ function cardGotoImg(i,idx){ cardSetImg(i,idx); }
 function projectDisplayName(m){
   return (m && m.title) || (m && m.handle ? m.handle.replace(/^Mush_\d+_/i,'').replace(/([a-z])([A-Z])/g,'$1 $2') : 'SpaceMush Project');
 }
+function escapeHTML(value){
+  return String(value===undefined||value===null?'':value)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
 function projectClientName(m){
   return m && m.client ? String(m.client).replace(/^—\s*/,'') : '';
 }
 
 function buildPostCard(m,i){
+  const displayName=escapeHTML(projectDisplayName(m));
   const tags=m.hashtags.map(h=>`<span class="hashtag">${h}</span>`).join(' ');
   const moreMenu=studioLoggedIn?`
     <div style="position:absolute;top:44px;right:0;background:var(--white);border:1px solid var(--border2);border-radius:var(--radius-sm);box-shadow:var(--shadow);min-width:160px;z-index:10;display:none" id="postMenu${i}">
@@ -1091,7 +1098,7 @@ function buildPostCard(m,i){
     <div class="post-header">
       <div class="post-avatar-ring"><div class="post-avatar"><span class="post-avatar-label">${mushNumber(m)?'MUSH '+mushNumber(m):'SM'}</span></div></div>
       <div class="post-info">
-        <div class="post-handle" onclick="openProject(${i})" style="cursor:pointer" title="View ${projectDisplayName(m)}">${projectDisplayName(m)}
+        <div class="post-handle" onclick="openProject(${i})" style="cursor:pointer" title="View ${displayName}">${displayName}
           <div class="verified-badge"><svg viewBox="0 0 10 10"><polyline points="2,5 4,7 8,3" stroke="white" stroke-width="1.5" fill="none"/></svg></div>
         </div>
         <div class="post-subloc">📍 ${m.loc}</div>
@@ -1108,7 +1115,7 @@ function buildPostCard(m,i){
     <div class="post-actions">
       <button class="action-btn" onclick="openProject(${i})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></button>
     </div>
-    <div class="post-caption"><span class="handle">${projectDisplayName(m)}</span> ${m.caption} ${tags}<span class="show-more" onclick="openProject(${i})"> more</span></div>
+    <div class="post-caption"><span class="handle">${displayName}</span> ${m.caption} ${tags}<span class="show-more" onclick="openProject(${i})"> more</span></div>
     <div class="project-feed-meta">
       ${m.client?`<span><strong>Client</strong> ${projectClientName(m)}</span>`:''}
       ${m.architect?`<span><strong>Architect</strong> ${m.architect}</span>`:''}
@@ -1191,12 +1198,13 @@ function projCardPrevImg(i){ projCardSetImg(i,(projCardImgIdx[i]||0)-1); }
 function projCardGotoImg(i,idx){ projCardSetImg(i,idx); }
 
 function buildProjectPostCard(m,i){
+  const displayName=escapeHTML(projectDisplayName(m));
   const tags=m.hashtags.map(h=>`<span class="hashtag">${h}</span>`).join(' ');
   return `<article class="mush-card sr" data-index="${i}" data-cat="${m.category}">
     <div class="post-header">
       <div class="post-avatar-ring"><div class="post-avatar"><span class="post-avatar-label">${m.id}</span></div></div>
       <div class="post-info">
-        <div class="post-handle" onclick="openProject(${i})" style="cursor:pointer" title="View ${projectDisplayName(m)}">${projectDisplayName(m)}
+        <div class="post-handle" onclick="openProject(${i})" style="cursor:pointer" title="View ${displayName}">${displayName}
           <div class="verified-badge"><svg viewBox="0 0 10 10"><polyline points="2,5 4,7 8,3" stroke="white" stroke-width="1.5" fill="none"/></svg></div>
         </div>
         <div class="post-subloc">📍 ${m.loc}</div>
@@ -1209,7 +1217,7 @@ function buildProjectPostCard(m,i){
     <div class="post-actions">
       <button class="action-btn" onclick="openProject(${i})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></button>
     </div>
-    <div class="post-caption"><span class="handle">${projectDisplayName(m)}</span> ${m.caption} ${tags}<span class="show-more" onclick="openProject(${i})"> more</span></div>
+    <div class="post-caption"><span class="handle">${displayName}</span> ${m.caption} ${tags}<span class="show-more" onclick="openProject(${i})"> more</span></div>
     <div class="project-feed-meta">
       ${m.client?`<span><strong>Client</strong> ${projectClientName(m)}</span>`:''}
       ${m.architect?`<span><strong>Architect</strong> ${m.architect}</span>`:''}
@@ -1727,16 +1735,20 @@ function openCreatePost(editIndex){
     }
   } else if(isEdit){
     const m=mushData[currentEditIndex];
+    document.getElementById('cp-title').value=m.title||projectDisplayName(m);
     document.getElementById('cp-handle').value=m.handle;
     document.getElementById('cp-loc').value=m.loc;
     document.getElementById('cp-project-number').value=mushNumber(m);
     document.getElementById('cp-show-mush').checked=m.showMushBadge!==false;
+    document.getElementById('cp-type').value=m.type||'';
+    document.getElementById('cp-tag').value=m.tag||'Residential';
     document.getElementById('cp-area').value=m.area;
     document.getElementById('cp-budget').value=m.budget;
     document.getElementById('cp-year').value=m.year;
     document.getElementById('cp-timeline').value=m.timeline;
     document.getElementById('cp-architect').value=m.architect;
     document.getElementById('cp-client').value=m.client||'';
+    document.getElementById('cp-contractor').value=m.contractor||'';
     document.getElementById('cp-caption').value=m.caption;
     document.getElementById('cp-desc').value=m.desc;
     // Set emoji preview
@@ -1748,14 +1760,18 @@ function openCreatePost(editIndex){
     document.getElementById('uploadZone').classList.add('has-img');
   } else {
     document.getElementById('cp-handle').value='';
+    document.getElementById('cp-title').value='';
     document.getElementById('cp-loc').value='';
     document.getElementById('cp-project-number').value=String(mushData.length+1).padStart(3,'0');
+    document.getElementById('cp-type').value='2BHK Apartment';
+    document.getElementById('cp-tag').value='Residential';
     document.getElementById('cp-area').value='';
     document.getElementById('cp-budget').value='';
     document.getElementById('cp-year').value=new Date().getFullYear();
     document.getElementById('cp-timeline').value='';
     document.getElementById('cp-architect').value='Karthik R.';
     document.getElementById('cp-client').value='';
+    document.getElementById('cp-contractor').value='M/s BuildRight';
     document.getElementById('cp-caption').value='';
     document.getElementById('cp-desc').value='';
     if(el('cp-general-title')) el('cp-general-title').value='';
@@ -1973,6 +1989,7 @@ async function publishMush(){
     id:String(mushData.length+1).padStart(3,'0'),
     mushNumber:(document.getElementById('cp-project-number').value||String(mushData.length+1).padStart(3,'0')).replace(/\D/g,''),
     showMushBadge:document.getElementById('cp-show-mush').checked,
+    title:document.getElementById('cp-title').value.trim()||projectDisplayName({handle:handle}),
     handle:handle,
     loc:document.getElementById('cp-loc').value||'Chennai',
     emoji:previewEmoji,
@@ -1987,7 +2004,7 @@ async function publishMush(){
     timeline:document.getElementById('cp-timeline').value||'—',
     architect:document.getElementById('cp-architect').value||'Karthik R.',
     client:document.getElementById('cp-client').value||'—',
-    contractor:'M/s BuildRight',
+    contractor:document.getElementById('cp-contractor').value||'—',
     likes:0,comments:0,
     hasStory:document.getElementById('cp-story-toggle').checked,
     storyCaption:document.getElementById('cp-story-toggle').checked?'Check out our latest project!':'',
@@ -2027,7 +2044,7 @@ async function publishMush(){
       author:{name:'spacemush_architects_chennai',avatar:'SM'},
       caption:newMush.caption,
       hashtags:newMush.hashtags||[],
-      project:Object.assign({},newMush,{title:newMush.handle,location:newMush.loc,description:newMush.desc}),
+      project:Object.assign({},newMush,{title:newMush.title,location:newMush.loc,description:newMush.desc}),
       runtimeKey:'runtime-project-'+runtimeProjectPosts.length,
       feedInsertBefore:(el('cp-feed-position')||{}).value||'top',
       postType:'project'
@@ -2211,7 +2228,7 @@ function openProject(i){
   set('pmlName','textContent',projectDisplayName(m));
   set('pmlLoc','textContent',m.loc);
   set('pmrNum','textContent',m.id);
-  set('pmrHandle','innerHTML',projectDisplayName(m)+' <span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;background:#1d9bf0;border-radius:50%;"><svg viewBox="0 0 10 10" width="10" height="10"><polyline points="2,5 4,7 8,3" stroke="white" stroke-width="1.5" fill="none"/></svg></span>');
+  set('pmrHandle','innerHTML',escapeHTML(projectDisplayName(m))+' <span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;background:#1d9bf0;border-radius:50%;"><svg viewBox="0 0 10 10" width="10" height="10"><polyline points="2,5 4,7 8,3" stroke="white" stroke-width="1.5" fill="none"/></svg></span>');
   applyFollowButtonState();
   set('pmrDesc','textContent',m.desc);
   set('pmrPhilosophy','textContent',m.philosophy);
@@ -2219,7 +2236,7 @@ function openProject(i){
     ['Location',m.loc],['Client',m.client || 'Not disclosed'],['Area',m.area],['Year',m.year],
     ['Budget',m.budget],['Type',m.type],['Timeline',m.timeline],
     ['Architect',m.architect],['Contractor',m.contractor],
-  ].map(([l,v])=>`<div class="pmr-meta-item"><div class="pmr-meta-label">${l}</div><div class="pmr-meta-val">${v}</div></div>`).join('');
+  ].map(([l,v])=>`<div class="pmr-meta-item"><div class="pmr-meta-label">${l}</div><div class="pmr-meta-val">${escapeHTML(v)}</div></div>`).join('');
   var pmat=el('pmrMaterials'); if(pmat) pmat.innerHTML=m.materials.map(mat=>`<span class="mat-chip">${mat}</span>`).join('');
   var ppal=el('pmrPalette'); if(ppal) ppal.innerHTML=m.palette.map(c=>`<div class="palette-swatch" style="background:${c}" title="${c}" onclick="toast('Color: ${c}')"></div>`).join('')+`<span style="font-size:12px;color:var(--lightgray);margin-left:8px">${m.palette.length} colors</span>`;
   var pgal=el('pmrGallery');

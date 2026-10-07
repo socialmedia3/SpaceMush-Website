@@ -219,6 +219,10 @@ Use this structure:
 ```
 
 **Important:** use `type: "project"` to mark this as a project post. Keep the building type in its project metadata, such as `G+1 Residence`.
+The Studio New Post form has matching fields for the project name, location,
+client, area, year, budget, type, timeline, architect, contractor, and description.
+The project name appears as the post title; the contractor and other details appear
+when visitors open the project.
 
 ### Step 3 — add the post key to `FEED_CONFIG`
 

@@ -298,22 +298,15 @@
       </div>
       <div id="projectPostFields">
       <div class="form-row-2">
+        <div class="fgroup"><label class="flabel">Project Name</label><input class="finput" id="cp-title" placeholder="La Perle"></div>
         <div class="fgroup"><label class="flabel">Mush Handle</label><input class="finput" id="cp-handle" placeholder="Mush_009_Egmore"></div>
+      </div>
+      <div class="form-row-2">
         <div class="fgroup"><label class="flabel">Location</label><input class="finput" id="cp-loc" placeholder="Egmore, Chennai"></div>
-      </div>
-      <div class="form-row-2">
         <div class="fgroup"><label class="flabel">Project number</label><input class="finput" id="cp-project-number" inputmode="numeric" placeholder="009"><div class="form-help">Used in the MUSH # button.</div></div>
-        <div class="toggle-row" style="margin-bottom:11px"><div><div class="toggle-label">Show MUSH # button</div><div class="toggle-sub">Display this project number on the post</div></div><label class="toggle-switch"><input type="checkbox" id="cp-show-mush"><span class="toggle-slider"></span></label></div>
       </div>
       <div class="form-row-2">
-        <div class="fgroup"><label class="flabel">Project Type</label>
-          <select class="fselect" id="cp-type">
-            <option>2BHK Apartment</option><option>3BHK Apartment</option><option>Studio Apartment</option>
-            <option>Master Bedroom</option><option>Modular Kitchen</option><option>Living Room</option>
-            <option>Co-working Space</option><option>Startup Office</option><option>Full Renovation</option>
-            <option>Luxury Villa</option><option>Commercial Space</option>
-          </select>
-        </div>
+        <div class="fgroup"><label class="flabel">Type</label><input class="finput" id="cp-type" value="2BHK Apartment" placeholder="G+1 Residence"></div>
         <div class="fgroup"><label class="flabel">Tag / Category</label>
           <select class="fselect" id="cp-tag">
             <option>Residential</option><option>Kitchen</option><option>Bedroom</option>
@@ -321,6 +314,10 @@
             <option>Office</option><option>Renovation</option>
           </select>
         </div>
+      </div>
+      <div class="toggle-row">
+        <div><div class="toggle-label">Show MUSH # button</div><div class="toggle-sub">Display this project number on the post</div></div>
+        <label class="toggle-switch"><input type="checkbox" id="cp-show-mush"><span class="toggle-slider"></span></label>
       </div>
       <div class="form-row-2">
         <div class="fgroup"><label class="flabel">Area (sq.ft)</label><input class="finput" id="cp-area" placeholder="840 sq.ft"></div>
@@ -334,6 +331,7 @@
         <div class="fgroup"><label class="flabel">Architect</label><input class="finput" id="cp-architect" placeholder="Karthik R."></div>
         <div class="fgroup"><label class="flabel">Client</label><input class="finput" id="cp-client" placeholder="Happy Client"></div>
       </div>
+      <div class="fgroup"><label class="flabel">Contractor</label><input class="finput" id="cp-contractor" placeholder="M/s BuildRight"></div>
       <div class="fgroup"><label class="flabel">Full Description</label><textarea class="finput" id="cp-desc" rows="3" placeholder="Detailed project description..."></textarea></div>
       </div>
       <div class="fgroup"><label class="flabel">Caption</label><textarea class="finput" id="cp-caption" rows="2" placeholder="Describe this post in a captivating line..."></textarea></div>

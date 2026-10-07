@@ -35,6 +35,7 @@ let currentPage='home';
 let toastTimer=null;
 let studioLoggedIn=false;
 let adminLoggedIn=false;
+let currentAdminEmail='';
 let currentEditIndex=-1; // -1 = new post, >=0 = editing existing
 let storyViewerMushIndex=-1;
 let storyTimerRef=null;
@@ -187,7 +188,7 @@ function archiveAdd(key,item){
   saveAdminArchive(key,list);
 }
 function archiveRemove(key,id){
-  var list=loadAdminArchive(key).filter(function(item){return item.id!==id;});
+  var list=loadAdminArchive(key).filter(function(item){return String(item.id)!==String(id);});
   saveAdminArchive(key,list);
 }
 // Merges this page-load's live (in-memory) items with everything ever archived,
@@ -271,6 +272,7 @@ function applyBundledGeneralOverride(row){
   var key=String(row.slug||'').slice('bundled-'.length);
   var bundled=POSTS&&POSTS[key];
   if(!bundled||bundled.type==='project'||deletedPostKeys.has(key)) return;
+  archivedPostKeys.delete(key);
   var content=row.content||{};
   Object.assign(bundled,content,{
     type:bundled.type,
@@ -322,6 +324,7 @@ function applyBundledProjectOverride(row){
   var key=String(row.slug||'').slice('bundled-'.length);
   var bundled=POSTS&&POSTS[key];
   if(!bundled||bundled.type!=='project'||!bundled.project||deletedPostKeys.has(key)||bundledProjectOverrides.has(key)) return;
+  archivedPostKeys.delete(key);
   if(!bundledProjectBases[key]){
     bundledProjectBases[key]=Object.assign({},bundled,{project:Object.assign({},bundled.project)});
     var source=mushData.find(function(project){return String(project.id)===String(bundled.project.id);});
@@ -442,11 +445,18 @@ async function loadSupabaseContent(){
 }
 async function loadArchivedRemotePosts(){
   if(!hasSupabase()||!adminLoggedIn) return;
+  archivedRemotePosts.forEach(function(post){
+    var previousKey=String(post.slug||'').indexOf('bundled-')===0?String(post.slug).slice('bundled-'.length):'';
+    if(previousKey) archivedPostKeys.delete(previousKey);
+  });
   var result=await supabaseClient.from('posts').select('*').eq('is_archived',true).order('created_at',{ascending:false});
   if(result.error){ console.warn('Could not load archived posts:',result.error.message); return; }
   archivedRemotePosts=(result.data||[]).map(function(row){
+    var bundledKey=String(row.slug||'').indexOf('bundled-')===0?String(row.slug).slice('bundled-'.length):'';
+    if(bundledKey) archivedPostKeys.add(bundledKey);
     var post=row.post_type==='general'?dbPostToGeneral(row):dbPostToProject(row);
     post.supabaseId=row.id;
+    if(bundledKey) post.bundledKey=bundledKey;
     post.isArchived=true;
     return post;
   });
@@ -477,17 +487,31 @@ async function loadSupabaseAdminData(){
   if(!hasSupabase()||!adminLoggedIn) return;
   try{
     await loadArchivedRemotePosts();
-    var c=await supabaseClient.from('comments').select('*').order('created_at',{ascending:false}).limit(500);
-    if(!c.error) allComments=(c.data||[]).map(function(x){
+    var results=await Promise.all([
+      supabaseClient.from('comments').select('*').order('created_at',{ascending:false}).limit(500),
+      supabaseClient.from('reach_us_messages').select('*').order('created_at',{ascending:false}).limit(500),
+      supabaseClient.from('notifications').select('*').order('created_at',{ascending:false}).limit(500)
+    ]);
+    var failures=[];
+    var c=results[0],r=results[1],n=results[2];
+    if(c.error) failures.push('comments: '+c.error.message);
+    else allComments=(c.data||[]).map(function(x){
       var postIndex=remotePostIndex(x.post_id,x.post_key);
       return {id:x.id,user:x.user_name,verified:x.verified,profession:x.profession||'',text:x.text,time:x.created_at,mushIdx:postIndex,mushHandle:x.post_key||''};
     });
-    var r=await supabaseClient.from('reach_us_messages').select('*').order('created_at',{ascending:false}).limit(500);
-    if(!r.error) reachUsMessages=(r.data||[]).map(function(x){return {id:x.id,name:x.name,phone:x.phone,email:x.email,budget:x.budget,message:x.message,source:x.source,read:x.read,time:x.created_at};});
-    var n=await supabaseClient.from('notifications').select('*').order('created_at',{ascending:false}).limit(500);
-    if(!n.error) notifications=(n.data||[]).map(function(x){return {id:x.id,type:x.type,user:x.user_name,avatar:x.avatar||'SM',text:x.text,unread:x.unread,time:x.created_at,mushIdx:-1};});
+    if(r.error) failures.push('Reach Us messages: '+r.error.message);
+    else reachUsMessages=(r.data||[]).map(function(x){return {id:x.id,name:x.name,phone:x.phone,email:x.email,budget:x.budget,message:x.message,source:x.source,read:x.read,time:x.created_at};});
+    if(n.error) failures.push('notifications: '+n.error.message);
+    else notifications=(n.data||[]).map(function(x){return {id:x.id,type:x.type,user:x.user_name,avatar:x.avatar||'SM',text:x.text,unread:x.unread,time:x.created_at,mushIdx:-1};});
     updateBadges(); renderAdminComments(); renderAdminReachUs(); renderAdminNotifications();
-  }catch(error){ console.warn('Supabase admin data unavailable; using local archive.',error); }
+    if(failures.length){
+      console.error('Some Supabase admin data could not be loaded:',failures);
+      toast('Some admin data could not be loaded: '+failures.join('; '));
+    }
+  }catch(error){
+    console.error('Supabase admin data unavailable:',error);
+    toast('Could not load admin data: '+(error.message||'check your connection.'));
+  }
 }
 async function persistNotification(n){
   if(!hasSupabase()||!adminLoggedIn) return;
@@ -1061,6 +1085,8 @@ function renderFeed(){
   });
   addRuntimePosts('bottom');
   c.innerHTML=parts.join('');
+  c.dataset.rendered='true';
+  populateFeedPositionOptions();
   try{initTouchCarousels();}catch(e){console.error('Carousel init error:',e);}
   try{setupScrollReveal();}catch(e){document.querySelectorAll('.sr').forEach(x=>x.classList.add('in'));}
   return parts.length>0;
@@ -1853,7 +1879,7 @@ function notifClick(id){
     notifPanelOpen=false;
     openAdminPanel();
     setTimeout(function(){
-      var btn=el('adminNavVerif');
+      var btn=el('adnav-verification');
       if(btn) adminTab('verification',btn);
     },250);
   } else if(n.mushIdx>=0&&n.mushIdx<mushData.length){
@@ -2033,17 +2059,27 @@ function populateFeedPositionOptions(){
   var options='<option value="top">Top of feed</option>';
   var anchors=[];
   var seen=new Set();
+  var renderedKeys=new Set();
+  var feed=el('feedContainer');
+  if(feed) feed.querySelectorAll('[data-post-id]').forEach(function(card){
+    renderedKeys.add(card.getAttribute('data-post-id'));
+  });
+  var useRenderedFeed=!!(feed&&feed.dataset.rendered==='true');
+  function isVisibleFeedPost(key){
+    return !useRenderedFeed||renderedKeys.has(key);
+  }
   mixed.forEach(function(item){
     var key=typeof item==='string'?item:(item.key||item.id);
     var post=(typeof POSTS!=='undefined'&&POSTS)?POSTS[key]:null;
     if(!key||!post||bundledProjectOverrides.has(key)||bundledGeneralOverrides.has(key)||
-      deletedPostKeys.has(key)||archivedPostKeys.has(key)||seen.has(key)) return;
+      deletedPostKeys.has(key)||archivedPostKeys.has(key)||!isVisibleFeedPost(key)||seen.has(key)) return;
     seen.add(key);
     anchors.push({key:key,label:post.title||post.project&&post.project.title||post.handle||post.subtitle||key});
   });
   runtimeProjectPosts.concat(generalPosts).forEach(function(post){
     var key=post.runtimeKey||post.key;
     if(!key||seen.has(key)||archivedPostKeys.has(key)||
+      !isVisibleFeedPost(key)||
       post.bundledKey&&(deletedPostKeys.has(post.bundledKey)||archivedPostKeys.has(post.bundledKey))) return;
     seen.add(key);
     var project=post.project;
@@ -2410,6 +2446,9 @@ async function deleteMush(i,confirmed){
   var bundledKey=Object.keys(POSTS||{}).find(function(key){
     return POSTS[key].type==='project'&&POSTS[key].project&&String(POSTS[key].project.id)===String(removed.id);
   });
+  if(removed.bundledOverrideId){
+    if(!await runPostLifecycle(removed.bundledOverrideId,'delete')) return;
+  }
   if(bundledKey&&!deletedPostKeys.has(bundledKey)){
     try{ await persistBundledPostDeletion(bundledKey); }
     catch(error){
@@ -2664,6 +2703,8 @@ async function restoreSupabaseAdminSession(){
       if(event==='SIGNED_OUT'){
         studioLoggedIn=false;
         adminLoggedIn=false;
+        currentAdminEmail='';
+        closeAdminPanel();
         updateNavForStudio();
       }
     });
@@ -2673,9 +2714,11 @@ async function restoreSupabaseAdminSession(){
 async function setSupabaseAdminSession(session){
   if(!session||!session.user) return false;
   var result=await supabaseClient.from('admin_users').select('user_id').eq('user_id',session.user.id).maybeSingle();
-  if(result.error||!result.data) return false;
+  if(result.error) throw result.error;
+  if(!result.data) return false;
   studioLoggedIn=true;
   adminLoggedIn=true;
+  currentAdminEmail=session.user.email||'';
   updateNavForStudio();
   return true;
 }
@@ -2707,23 +2750,33 @@ function closeAuthModal(e){
 // ============================================================
 function openAdminPanel(){
   if(!studioLoggedIn){ openAdminLogin(); return; }
-  launchAdminPanel((loggedInUser&&loggedInUser.email)||'spacemush2026@gmail.com');
+  launchAdminPanel(currentAdminEmail||'Studio administrator');
   loadSupabaseAdminData();
 }
 
 async function submitAdminLogin(event){
   if(event) event.preventDefault();
-  if(!hasSupabase()){ toast('Supabase is not available.'); return; }
-  var email=(el('adminLoginEmail')||{}).value||'';
-  var password=(el('adminLoginPassword')||{}).value||'';
-  var result=await supabaseClient.auth.signInWithPassword({email:email.trim(),password:password});
-  if(result.error){ toast('Login failed: '+result.error.message); return; }
-  var allowed=await setSupabaseAdminSession(result.data.session);
-  if(!allowed){ await supabaseClient.auth.signOut(); toast('This account is not an admin.'); return; }
-  removeClass('adminLoginOverlay','open');
-  document.body.style.overflow='';
-  launchAdminPanel(email.trim());
-  loadSupabaseAdminData();
+  try{
+    if(!hasSupabase()){ toast('Supabase is not available.'); return; }
+    var email=(el('adminLoginEmail')||{}).value||'';
+    var password=(el('adminLoginPassword')||{}).value||'';
+    var result=await supabaseClient.auth.signInWithPassword({email:email.trim(),password:password});
+    if(result.error) throw result.error;
+    var allowed=await setSupabaseAdminSession(result.data.session);
+    if(!allowed){
+      await supabaseClient.auth.signOut();
+      currentAdminEmail='';
+      toast('This account is not an admin.');
+      return;
+    }
+    removeClass('adminLoginOverlay','open');
+    document.body.style.overflow='';
+    launchAdminPanel(currentAdminEmail||email.trim());
+    loadSupabaseAdminData();
+  }catch(error){
+    console.error('Admin sign-in failed:',error);
+    toast('Admin sign-in failed: '+(error.message||'check your connection and try again.'));
+  }
 }
 function launchAdminPanel(userLabel){
   var lbl=el('adminUserLabel');
@@ -3155,13 +3208,14 @@ function renderAdminPosts(){
   var existingGeneralPosts=(typeof POSTS!=='undefined'&&POSTS)
     ? Object.keys(POSTS).map(function(key){return {post:POSTS[key],key:key,kind:'general-existing'};}).filter(function(entry){return entry.post.type!=='project'&&!deletedPostKeys.has(entry.key);})
     : [];
+  var standaloneGeneralPosts=generalPosts.filter(function(post){return !post.bundledKey||!POSTS[post.bundledKey];});
   var visiblePosts=mushData.map(function(post,index){
     var runtime=runtimeProjectPosts.find(function(item){return item.project&&String(item.project.id)===String(post.id);});
     return {post:post,index:index,kind:'project',key:post.supabaseId||runtime&&runtime.runtimeKey};
   })
     .concat(archivedRemotePosts.map(function(post){return {post:post,index:-1,kind:post.postType==='general'?'general':'project',key:post.supabaseId||post.runtimeKey};}))
     .concat(existingGeneralPosts)
-    .concat(generalPosts.map(function(post){return {post:post,key:post.key,kind:'general'};}))
+    .concat(standaloneGeneralPosts.map(function(post){return {post:post,key:post.key,kind:'general'};}))
     .filter(function(entry){
     var post=entry.post;
     var searchable=[post.handle,post.title,post.subtitle,post.loc,post.tag,post.caption,post.category].join(' ').toLowerCase();
@@ -3177,7 +3231,7 @@ function renderAdminPosts(){
   });
   if(filter==='recent') visiblePosts.reverse();
   var count=el('adminPostCount');
-  var totalPosts=mushData.length+archivedRemotePosts.length+existingGeneralPosts.length+generalPosts.length;
+  var totalPosts=mushData.length+archivedRemotePosts.length+existingGeneralPosts.length+standaloneGeneralPosts.length;
   if(count) count.textContent=visiblePosts.length+' of '+totalPosts+' posts';
   if(!visiblePosts.length){
     apg.innerHTML='<div class="admin-posts-empty"><div class="admin-empty-mark">⌁</div><strong>No posts found</strong><span>Try a different search or create something new.</span></div>';
@@ -3190,7 +3244,8 @@ function renderAdminPosts(){
     var cover=images.length?images[0]:'';
     var entryKey=entry.key||post.runtimeKey||Object.keys(POSTS||{}).find(function(key){return POSTS[key].type==='project'&&POSTS[key].project&&String(POSTS[key].project.id)===String(post.id);});
     var archived=!!post.isArchived||archivedPostKeys.has(entryKey);
-    var pending=post.supabaseId&&lifecyclePending.has(post.supabaseId);
+    var lifecycleId=post.supabaseId||post.bundledOverrideId;
+    var pending=lifecycleId&&lifecyclePending.has(lifecycleId);
     return '<article class="admin-post-card">'+
       '<div class="admin-post-img">'+(cover?'<img class="admin-post-cover" src="'+cover+'" alt="'+post.handle+' cover">':'<span>'+post.emoji+'</span>')+'<span class="admin-card-status '+(archived?'archived':'')+'">'+(archived?'ARCHIVED':'LIVE')+'</span></div>'+
       '<div class="admin-post-info">'+
@@ -3203,7 +3258,7 @@ function renderAdminPosts(){
         (entry.kind==='project'&&index>=0?'<button class="admin-action-btn edit" onclick="openEditPost('+index+')">Edit post <span>→</span></button>':'')+
         (entry.kind!=='project'&&index!==-1?'<button class="admin-action-btn edit" onclick="openEditGeneralPost(\''+entryKey+'\')">Edit post <span>→</span></button>':'')+
         '<button class="admin-icon-action archive" '+(pending?'disabled':'')+' aria-label="'+(archived?'Unarchive':'Archive')+' post" title="'+(pending?'Working…':(archived?'Unarchive':'Archive')+' post')+'" onclick="adminToggleArchive(\''+entryKey+'\')">'+(archived?'↥':'▱')+'</button>'+
-        (entry.kind==='project'?(index>=0?'<button class="admin-icon-action delete" '+(pending?'disabled':'')+' aria-label="Delete post" title="'+(pending?'Working…':'Delete post')+'" onclick="adminDeleteMush('+index+')">⌫</button>':(post.supabaseId?'<button class="admin-icon-action delete" '+(pending?'disabled':'')+' aria-label="Delete post" title="'+(pending?'Working…':'Delete post')+'" onclick="adminDeleteRemotePost(\''+post.supabaseId+'\',\''+(post.handle||post.title||'this post').replace(/'/g,"\\'")+'\')">⌫</button>':'')):'<button class="admin-icon-action delete" '+(pending?'disabled':'')+' aria-label="Delete post" title="'+(pending?'Working…':'Delete post')+'" onclick="adminDeleteGeneralPost(\''+entryKey+'\')">⌫</button>')+
+        (entry.kind==='project'?(index>=0?'<button class="admin-icon-action delete" '+(pending?'disabled':'')+' aria-label="Delete post" title="'+(pending?'Working…':'Delete post')+'" onclick="adminDeleteMush('+index+')">⌫</button>':(lifecycleId?'<button class="admin-icon-action delete" '+(pending?'disabled':'')+' aria-label="Delete post" title="'+(pending?'Working…':'Delete post')+'" onclick="adminDeleteRemotePost(\''+lifecycleId+'\',\''+(post.handle||post.title||'this post').replace(/'/g,"\\'")+'\')">⌫</button>':'')):'<button class="admin-icon-action delete" '+(pending?'disabled':'')+' aria-label="Delete post" title="'+(pending?'Working…':'Delete post')+'" onclick="adminDeleteGeneralPost(\''+entryKey+'\')">⌫</button>')+
       '</div>'+
     '</article>';
   }).join('');
@@ -3222,13 +3277,16 @@ async function adminDeleteRemotePost(postId,label){
 
 async function adminDeleteGeneralPost(key){
   var post=(typeof POSTS!=='undefined'&&POSTS[key])||generalPosts.find(function(item){return item.key===key;});
+  var bundledOverride=generalPosts.find(function(item){return item.bundledKey===key;});
   var label=post&&(post.handle||post.title||post.subtitle)||'this post';
   if(!confirm('Delete '+label+'? This cannot be undone.')) return;
-  if(post&&post.supabaseId){
-    await adminDeleteRemotePost(post.supabaseId,label);
-    return;
+  var isBundledPost=!!(typeof POSTS!=='undefined'&&POSTS[key]);
+  var remotePost=bundledOverride||post;
+  if(remotePost&&remotePost.supabaseId){
+    if(!await runPostLifecycle(remotePost.supabaseId,'delete')) return;
+    if(!isBundledPost) return;
   }
-  if((typeof POSTS!=='undefined'&&POSTS[key])&&!deletedPostKeys.has(key)){
+  if(isBundledPost&&!deletedPostKeys.has(key)){
     try{ await persistBundledPostDeletion(key); }
     catch(error){
       console.error('Bundled carousel deletion failed:',error);
@@ -3236,8 +3294,8 @@ async function adminDeleteGeneralPost(key){
       return;
     }
   }
-  deletedPostKeys.add(key);
-  generalPosts=generalPosts.filter(function(item){return item.key!==key;});
+  if(isBundledPost) deletedPostKeys.add(key);
+  generalPosts=generalPosts.filter(function(item){return item.key!==key&&item.bundledKey!==key;});
   renderFeed();
   renderStories();
   renderAdminPosts();
@@ -3249,12 +3307,21 @@ async function adminDeleteGeneralPost(key){
 async function adminToggleArchive(key){
   if(!key) return;
   var project=mushData.find(function(post){return post.supabaseId===key || 'supabase-'+post.supabaseId===key || post.bundledOverrideId===key || 'supabase-'+post.bundledOverrideId===key;}) ||
-    generalPosts.find(function(post){return post.key===key||post.supabaseId===key||'supabase-'+post.supabaseId===key;}) ||
+    generalPosts.find(function(post){return post.key===key||post.bundledKey===key||post.supabaseId===key||'supabase-'+post.supabaseId===key;}) ||
     archivedRemotePosts.find(function(post){return post.supabaseId===key || 'supabase-'+post.supabaseId===key;});
   var postId=project&&(project.supabaseId||project.bundledOverrideId);
   if(postId){
     var action=project.isArchived?'unarchive':'archive';
-    if(await runPostLifecycle(postId,action)) toast(action==='archive'?'▱ Post and associated stories archived':'↥ Post and associated stories restored');
+    if(await runPostLifecycle(postId,action)){
+      if(project.bundledKey){
+        if(action==='archive') archivedPostKeys.add(project.bundledKey);
+        else archivedPostKeys.delete(project.bundledKey);
+        renderFeed();
+        renderAdminPosts();
+        populateFeedPositionOptions();
+      }
+      toast(action==='archive'?'▱ Post and associated stories archived':'↥ Post and associated stories restored');
+    }
     return;
   }
   if(archivedPostKeys.has(key)){
@@ -3295,12 +3362,19 @@ function renderAdminComments(){
   }).join('');
 }
 
-function removeComment(id){
-  allComments=allComments.filter(function(c){return String(c.id)!==String(id);});
-  archiveRemove('comments',id);
-  if(hasSupabase()&&adminLoggedIn&&typeof id==='string') supabaseClient.from('comments').delete().eq('id',id).then(function(result){
-    if(result.error) console.warn('Could not remove comment:',result.error.message);
-  });
+async function removeComment(id){
+  try{
+    if(hasSupabase()&&adminLoggedIn&&typeof id==='string'){
+      var result=await supabaseClient.from('comments').delete().eq('id',id);
+      if(result.error) throw result.error;
+    }
+    allComments=allComments.filter(function(c){return String(c.id)!==String(id);});
+    archiveRemove('comments',id);
+  }catch(error){
+    console.error('Comment deletion failed:',error);
+    toast('Could not remove comment: '+(error.message||'try again.'));
+    return;
+  }
   renderAdminComments();
   toast('🗑️ Comment removed');
 }
@@ -3348,12 +3422,19 @@ function renderAdminReachUs(){
     '</div>';
   }).join('');
 }
-function removeReachUsMessage(id){
-  reachUsMessages=reachUsMessages.filter(function(m){return String(m.id)!==String(id);});
-  archiveRemove('reachus',id);
-  if(hasSupabase()&&adminLoggedIn&&typeof id==='string') supabaseClient.from('reach_us_messages').delete().eq('id',id).then(function(result){
-    if(result.error) console.warn('Could not remove message:',result.error.message);
-  });
+async function removeReachUsMessage(id){
+  try{
+    if(hasSupabase()&&adminLoggedIn&&typeof id==='string'){
+      var result=await supabaseClient.from('reach_us_messages').delete().eq('id',id);
+      if(result.error) throw result.error;
+    }
+    reachUsMessages=reachUsMessages.filter(function(m){return String(m.id)!==String(id);});
+    archiveRemove('reachus',id);
+  }catch(error){
+    console.error('Reach Us message deletion failed:',error);
+    toast('Could not remove message: '+(error.message||'try again.'));
+    return;
+  }
   renderAdminReachUs();
   toast('🗑️ Message removed');
 }

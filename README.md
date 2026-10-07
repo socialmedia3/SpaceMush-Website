@@ -351,3 +351,8 @@ Deleting a bundled post stores a deletion marker in `public.bundled_post_state`,
 so it stays hidden after refresh instead of returning from `js/data.js`. After
 updating the backend schema, run the full `supabase-schema.sql` script again in
 the Supabase SQL editor before using post management.
+
+Unpublished editor drafts are saved in this browser and can be found in
+**Manage posts → Drafts**. Select a draft to continue editing, then publish it
+from the editor. Draft images are kept in browser storage and are not sent to
+the public feed until the post is published.

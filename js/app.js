@@ -55,6 +55,64 @@ let deletedPostKeys=new Set();
 let archivedPostKeys=new Set();
 let archivedRemotePosts=[];
 let lifecyclePending=new Set();
+let postDrafts=[];
+let postDraftsLoaded=false;
+let postDraftsLoadPromise=null;
+let currentEditingDraftId=null;
+const POST_DRAFT_DB='spacemush-post-drafts';
+
+function openPostDraftDatabase(){
+  return new Promise(function(resolve,reject){
+    if(!window.indexedDB){reject(new Error('This browser does not support saving drafts locally.'));return;}
+    var request=window.indexedDB.open(POST_DRAFT_DB,1);
+    request.onupgradeneeded=function(){
+      if(!request.result.objectStoreNames.contains('drafts')) request.result.createObjectStore('drafts',{keyPath:'id'});
+    };
+    request.onsuccess=function(){resolve(request.result);};
+    request.onerror=function(){reject(request.error||new Error('Could not open local draft storage.'));};
+  });
+}
+function withPostDraftStore(mode,run){
+  return openPostDraftDatabase().then(function(db){
+    return new Promise(function(resolve,reject){
+      var transaction=db.transaction('drafts',mode);
+      var store=transaction.objectStore('drafts');
+      var request=run(store);
+      var result;
+      if(request){
+        request.onsuccess=function(){result=request.result;};
+        request.onerror=function(){reject(request.error||new Error('Could not access saved drafts.'));};
+      }
+      transaction.oncomplete=function(){db.close();resolve(result);};
+      transaction.onerror=function(){db.close();reject(transaction.error||new Error('Could not save draft data.'));};
+      transaction.onabort=function(){db.close();reject(transaction.error||new Error('Draft storage transaction was cancelled.'));};
+    });
+  });
+}
+function loadPostDrafts(){
+  if(postDraftsLoaded) return Promise.resolve(postDrafts);
+  if(postDraftsLoadPromise) return postDraftsLoadPromise;
+  postDraftsLoadPromise=withPostDraftStore('readonly',function(store){return store.getAll();}).then(function(drafts){
+    postDrafts=Array.isArray(drafts)?drafts:[];
+    postDraftsLoaded=true;
+    return postDrafts;
+  }).finally(function(){postDraftsLoadPromise=null;});
+  return postDraftsLoadPromise;
+}
+function storePostDraft(draft){
+  return withPostDraftStore('readwrite',function(store){return store.put(draft);}).then(function(){
+    var index=postDrafts.findIndex(function(item){return item.id===draft.id;});
+    if(index<0) postDrafts.unshift(draft);
+    else postDrafts[index]=draft;
+    postDraftsLoaded=true;
+  });
+}
+function removePostDraft(id){
+  return withPostDraftStore('readwrite',function(store){return store.delete(id);}).then(function(){
+    postDrafts=postDrafts.filter(function(draft){return draft.id!==id;});
+    postDraftsLoaded=true;
+  });
+}
 
 // ── AUTH: registered users persist in localStorage; no demo accounts ──
 function loadRegisteredUsers(){
@@ -1708,10 +1766,11 @@ function openCreatePost(editIndex){
   currentEditIndex=editIndex!==undefined?editIndex:-1;
   const isGeneralEdit=currentEditGeneralKey!==null;
   const isEdit=currentEditIndex>=0||isGeneralEdit;
+  const isDraftEdit=currentEditingDraftId!==null;
   var kind=el('cp-post-kind');
   if(kind) kind.value=isGeneralEdit?'general':'project';
   populateFeedPositionOptions();
-  document.getElementById('createPostTitle').textContent=isEdit?'✏️ Edit Mush Post':'✦ New Mush Post';
+  document.getElementById('createPostTitle').textContent=isDraftEdit?'✏️ Edit Draft':(isEdit?'✏️ Edit Mush Post':'✦ New Mush Post');
   // Reset emoji picker
   document.getElementById('uploadIcon').style.display='block';
   document.getElementById('uploadPreview').style.display='none';
@@ -1779,6 +1838,23 @@ function openCreatePost(editIndex){
     if(el('cp-general-subtitle')) el('cp-general-subtitle').value='';
     if(el('cp-feed-position')) el('cp-feed-position').value='top';
   }
+  if(isDraftEdit){
+    var savedDraft=postDrafts.find(function(draft){return draft.id===currentEditingDraftId;});
+    var draftData=savedDraft&&savedDraft.data;
+    if(draftData){
+      if(kind) kind.value=draftData.kind||'project';
+      ['title','handle','loc','project-number','type','tag','area','budget','year','timeline','architect','client','contractor','desc','caption','general-title','general-label','general-subtitle','feed-position'].forEach(function(field){
+        var input=el('cp-'+field);
+        var key=field==='project-number'?'projectNumber':field==='feed-position'?'feedPosition':field==='general-title'?'generalTitle':field==='general-label'?'generalLabel':field==='general-subtitle'?'generalSubtitle':field;
+        if(input&&draftData[key]!==undefined) input.value=draftData[key];
+      });
+      if(el('cp-show-mush')) el('cp-show-mush').checked=!!draftData.showMush;
+      if(el('cp-story-toggle')) el('cp-story-toggle').checked=!!draftData.story;
+      if(el('cp-story-note')) el('cp-story-note').style.display=draftData.story?'block':'none';
+      selectedPostImages=(draftData.images||[]).slice();
+      renderPostImagePreviews();
+    }
+  }
   togglePostKindFields();
   document.getElementById('cp-story-toggle').addEventListener('change',function(){
     document.getElementById('cp-story-note').style.display=this.checked?'block':'none';
@@ -1788,13 +1864,23 @@ function openCreatePost(editIndex){
 }
 
 function openEditPost(i){
+  currentEditingDraftId=null;
   currentEditGeneralKey=null;
   openCreatePost(i);
 }
 
 function openEditGeneralPost(key){
+  currentEditingDraftId=null;
   currentEditIndex=-1;
   currentEditGeneralKey=key;
+  openCreatePost();
+}
+
+function openDraftPost(id){
+  if(!studioLoggedIn){toast('🔐 Please log in to Studio first');openAuth('studio');return;}
+  currentEditingDraftId=id;
+  currentEditGeneralKey=null;
+  currentEditIndex=-1;
   openCreatePost();
 }
 
@@ -1882,14 +1968,88 @@ function dropPostImage(event,targetIndex){
   renderPostImagePreviews();
 }
 
-function saveDraft(){
-  toast('💾 Draft saved!');
-  closeCreatePost();
+async function saveDraft(){
+  var kind=(el('cp-post-kind')||{}).value||'project';
+  var data={
+    kind:kind,
+    title:(el('cp-title')||{}).value||'',
+    handle:(el('cp-handle')||{}).value||'',
+    loc:(el('cp-loc')||{}).value||'',
+    projectNumber:(el('cp-project-number')||{}).value||'',
+    showMush:!!(el('cp-show-mush')||{}).checked,
+    type:(el('cp-type')||{}).value||'',
+    tag:(el('cp-tag')||{}).value||'Residential',
+    area:(el('cp-area')||{}).value||'',
+    budget:(el('cp-budget')||{}).value||'',
+    year:(el('cp-year')||{}).value||'',
+    timeline:(el('cp-timeline')||{}).value||'',
+    architect:(el('cp-architect')||{}).value||'',
+    client:(el('cp-client')||{}).value||'',
+    contractor:(el('cp-contractor')||{}).value||'',
+    desc:(el('cp-desc')||{}).value||'',
+    caption:(el('cp-caption')||{}).value||'',
+    generalTitle:(el('cp-general-title')||{}).value||'',
+    generalLabel:(el('cp-general-label')||{}).value||'',
+    generalSubtitle:(el('cp-general-subtitle')||{}).value||'',
+    feedPosition:(el('cp-feed-position')||{}).value||'top',
+    story:!!(el('cp-story-toggle')||{}).checked,
+    images:selectedPostImages.slice()
+  };
+  try{
+    await loadPostDrafts();
+    var now=new Date().toISOString();
+    var existing=postDrafts.find(function(draft){return draft.id===currentEditingDraftId;});
+    var title=kind==='general'?data.generalTitle:data.title;
+    var draft={
+      id:currentEditingDraftId||(window.crypto&&window.crypto.randomUUID?window.crypto.randomUUID():'draft-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)),
+      kind:kind,
+      title:title.trim()||data.handle.trim()||'Untitled draft',
+      updatedAt:now,
+      createdAt:existing?existing.createdAt:now,
+      data:data
+    };
+    await storePostDraft(draft);
+    currentEditingDraftId=null;
+    closeCreatePost();
+    renderAdminPosts();
+    toast('Draft saved. Find it in Manage posts → Drafts.');
+  }catch(error){
+    console.error('Draft save failed:',error);
+    toast('Could not save draft: '+(error.message||'local draft storage is unavailable.'));
+  }
+}
+
+async function deletePostDraft(id){
+  var draft=postDrafts.find(function(item){return item.id===id;});
+  if(!draft) return;
+  if(!confirm('Delete draft "'+draft.title+'"? This cannot be undone.')) return;
+  try{
+    await removePostDraft(id);
+    renderAdminPosts();
+    toast('Draft deleted.');
+  }catch(error){
+    console.error('Draft deletion failed:',error);
+    toast('Could not delete draft: '+(error.message||'local draft storage is unavailable.'));
+  }
+}
+
+async function removeCurrentDraftAfterPublish(){
+  if(!currentEditingDraftId) return '';
+  var id=currentEditingDraftId;
+  try{
+    await removePostDraft(id);
+    currentEditingDraftId=null;
+    return '';
+  }catch(error){
+    console.error('Published post, but draft cleanup failed:',error);
+    currentEditingDraftId=null;
+    return ' The saved draft copy remains in Manage posts → Drafts.';
+  }
 }
 
 async function publishMush(){
   const postKind=(document.getElementById('cp-post-kind')||{}).value||'project';
-  const handle=document.getElementById('cp-handle').value.trim();
+  let handle=document.getElementById('cp-handle').value.trim();
   if(postKind==='general'){
     var editingGeneral=currentEditGeneralKey!==null;
     var existingGeneralSource=editingGeneral
@@ -1939,7 +2099,7 @@ async function publishMush(){
           catch(error){
             console.error('Carousel update failed:',error);
             await loadSupabaseContent();
-            toast('Could not save this carousel. The previous saved version was kept.');
+            toast('Could not update carousel: '+(error.message||'the previously saved version was kept.'));
             return;
           }
         }else Object.assign(runtimeGeneral,updatedRuntimeGeneral);
@@ -1952,7 +2112,7 @@ async function publishMush(){
         try{ await persistGeneralPost(updatedBundledGeneral,currentEditGeneralKey); }
         catch(error){
           console.error('Bundled carousel update failed:',error);
-          toast('Could not save this carousel. The previous saved version was kept.');
+          toast('Could not update carousel: '+(error.message||'the previously saved version was kept.'));
           return;
         }
         Object.assign(existingGeneral,updatedBundledGeneral);
@@ -1972,17 +2132,22 @@ async function publishMush(){
       console.error('Carousel publish failed:',error);
       generalPosts=generalPosts.filter(function(post){return post!==newGeneral;});
       delete infoPosts[generalKey];
-      toast('Could not publish this carousel. Nothing was saved.');
+      toast('Could not publish: '+(error.message||'check your connection and admin access.'));
       return;
     }
-    addNotification({type:'new',user:'Studio',avatar:'SM',text:'New general carousel published: <b>'+handle+'</b>',time:'just now',mushIdx:-1,thumb:'▧'});
+    var draftCleanupNotice=await removeCurrentDraftAfterPublish();
+    addNotification({type:'new',user:'Studio',avatar:'SM',text:'New general carousel published: <b>'+generalTitle+'</b>',time:'just now',mushIdx:-1,thumb:'▧'});
     closeCreatePost();
     renderFeed();
     renderAdminPosts();
-    toast('🚀 General carousel published!');
+    toast('🚀 General carousel published!'+draftCleanupNotice);
     return;
   }
-  if(!handle){toast('⚠️ Please enter a Mush handle');return;}
+  if(!handle){
+    var projectNumber=(el('cp-project-number')||{}).value||String(mushData.length+1).padStart(3,'0');
+    var titleSuffix=((el('cp-title')||{}).value||'Project').trim().replace(/\s+/g,'_').replace(/[^\w-]/g,'');
+    handle='Mush_'+projectNumber+'_'+(titleSuffix||'Project');
+  }
   const isEdit=currentEditIndex>=0;
   const previewEmoji=document.getElementById('uploadPreview').textContent||emojiOptions[0];
   const newMush={
@@ -2032,7 +2197,7 @@ async function publishMush(){
     catch(error){
       console.error('Project update failed:',error);
       Object.assign(editingProject,previousProject);
-      toast('Could not save this post. Check your connection and try again.');
+      toast('Could not update post: '+(error.message||'check your connection and admin access.'));
       return;
     }
     addNotification({type:'edit',user:'Studio',avatar:'SM',text:`Post <b>${handle}</b> was updated by Studio`,time:'just now',mushIdx:currentEditIndex,thumb:previewEmoji});
@@ -2054,14 +2219,15 @@ async function publishMush(){
       console.error('Project publish failed:',error);
       mushData.splice(mushData.indexOf(newMush),1);
       runtimeProjectPosts=runtimeProjectPosts.filter(function(post){return !post.project||String(post.project.id)!==String(newMush.id);});
-      toast('Could not publish this post. Nothing was saved.');
+      toast('Could not publish: '+(error.message||'check your connection and admin access.'));
       return;
     }
+    var draftCleanupNotice=await removeCurrentDraftAfterPublish();
     addNotification({type:'new',user:'Studio',avatar:'SM',text:`New post published: <b>${handle}</b>`,time:'just now',mushIdx:mushData.length-1,thumb:previewEmoji});
     if(newMush.hasStory){
       addNotification({type:'story',user:'Studio',avatar:'SM',text:`Story auto-posted for <b>${handle}</b>`,time:'just now',mushIdx:mushData.length-1,thumb:previewEmoji});
     }
-    toast('🚀 New Mush published!');
+    toast('🚀 New Mush published!'+draftCleanupNotice);
   }
   closeCreatePost();
   renderFeed();
@@ -2111,6 +2277,7 @@ function closeCreatePost(e){
     removeClass('createPostOverlay','open');
     document.body.style.overflow='';
     currentEditGeneralKey=null;
+    currentEditingDraftId=null;
   }
 }
 
@@ -2781,6 +2948,53 @@ function renderAdminPosts(){
   if(!apg) return;
   var search=((el('adminPostSearch')||{}).value||'').trim().toLowerCase();
   var filter=(el('adminPostFilter')||{}).value||'all';
+  if(filter==='drafts'){
+    if(!postDraftsLoaded){
+      apg.innerHTML='<div class="admin-posts-empty"><strong>Loading drafts…</strong></div>';
+      loadPostDrafts().then(renderAdminPosts).catch(function(error){
+        console.error('Draft loading failed:',error);
+        apg.innerHTML='<div class="admin-posts-empty"><strong>Drafts could not be loaded</strong><span>'+
+          escapeHTML(error.message||'Local draft storage is unavailable.')+'</span></div>';
+      });
+      return;
+    }
+    var matchingDrafts=postDrafts.filter(function(draft){
+      var searchable=[draft.title,draft.kind,draft.data&&draft.data.loc,draft.data&&draft.data.caption].join(' ').toLowerCase();
+      return !search||searchable.indexOf(search)!==-1;
+    });
+    var countDrafts=el('adminPostCount');
+    if(countDrafts) countDrafts.textContent=matchingDrafts.length+' of '+postDrafts.length+' drafts';
+    var draftFilter=el('adminPostFilter');
+    if(draftFilter){
+      var draftOption=draftFilter.querySelector('option[value="drafts"]');
+      if(draftOption) draftOption.textContent='Drafts ('+postDrafts.length+')';
+    }
+    if(!matchingDrafts.length){
+      apg.innerHTML='<div class="admin-posts-empty"><div class="admin-empty-mark">⌁</div><strong>No drafts found</strong><span>Save a post as a draft and it will appear here.</span></div>';
+      return;
+    }
+    apg.innerHTML=matchingDrafts.map(function(draft){
+      var data=draft.data||{};
+      var images=Array.isArray(data.images)?data.images:[];
+      var title=escapeHTML(draft.title||'Untitled draft');
+      var location=escapeHTML(data.loc||data.generalLabel||'Not set');
+      var cover=images.length?'<img class="admin-post-cover" src="'+escapeHTML(images[0])+'" alt="Draft cover">':'<span>'+(data.kind==='general'?'▧':'🏠')+'</span>';
+      return '<article class="admin-post-card">'+
+        '<div class="admin-post-img">'+cover+'<span class="admin-card-status draft">DRAFT</span></div>'+
+        '<div class="admin-post-info">'+
+          '<div class="admin-post-topline"><span class="admin-post-type">'+(data.kind==='general'?'GENERAL':'PROJECT')+'</span><span class="admin-post-year">DRAFT</span></div>'+
+          '<div class="admin-post-handle">'+title+'</div>'+
+          '<div class="admin-post-location">'+location+'</div>'+
+          '<div class="admin-post-metrics"><span>▧ '+images.length+' image'+(images.length===1?'':'s')+'</span><span>Saved '+new Date(draft.updatedAt||draft.createdAt||0).toLocaleDateString()+'</span></div>'+
+        '</div>'+
+        '<div class="admin-post-actions">'+
+          '<button class="admin-action-btn edit" onclick="openDraftPost(\''+draft.id+'\')">Continue editing <span>→</span></button>'+
+          '<button class="admin-icon-action delete" aria-label="Delete draft" title="Delete draft" onclick="deletePostDraft(\''+draft.id+'\')">⌫</button>'+
+        '</div>'+
+      '</article>';
+    }).join('');
+    return;
+  }
   var existingGeneralPosts=(typeof POSTS!=='undefined'&&POSTS)
     ? Object.keys(POSTS).map(function(key){return {post:POSTS[key],key:key,kind:'general-existing'};}).filter(function(entry){return entry.post.type!=='project'&&!deletedPostKeys.has(entry.key);})
     : [];

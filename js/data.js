@@ -63,6 +63,7 @@ const LOGO_B64 = {
 
 const CONTENT_POSTS = {
   "what-we-do": {
+    "title": "What We Do",
     "avatarText": "SM",
     "handle": "spacemush_architects_chennai",
     "subtitle": "What we do · Thoughtful design for real lives",
@@ -94,6 +95,7 @@ const CONTENT_POSTS = {
     "postType": "info"
   },
   "where-it-all-begins": {
+    "title": "Where It All Begins",
     "avatarText": "SM",
     "handle": "spacemush_architects_chennai",
     "subtitle": "📍 Chennai · Est. 2020",
@@ -110,6 +112,7 @@ const CONTENT_POSTS = {
     "postType": "info"
   },
   "who-ssr": {
+    "title": "Who Is SSR?",
     "avatarText": "SSR",
     "handle": "Architect SSR",
     "subtitle": "Who is SSR? · Founder of SpaceMush",
@@ -130,6 +133,7 @@ const CONTENT_POSTS = {
     "postType": "info"
   },
   "who-we-are": {
+    "title": "Who We Are",
     "avatarText": "SM",
     "handle": "spacemush_architects_chennai",
     "subtitle": "Who we are · The SpaceMush team",
@@ -160,6 +164,7 @@ const CONTENT_POSTS = {
     "postType": "info"
   },
   "how-we-design": {
+    "title": "How We Design",
     "avatarText": "SM",
     "handle": "spacemush_architects_chennai",
     "subtitle": "How we design · From constraint to space",
@@ -190,6 +195,7 @@ const CONTENT_POSTS = {
     "postType": "info"
   },
   "how-to-find-us": {
+    "title": "How to Find Us",
     "avatarText": "SM",
     "handle": "spacemush_architects_chennai",
     "subtitle": "📍 Chennai · Where to find us",
@@ -214,6 +220,7 @@ const CONTENT_POSTS = {
     "postType": "info"
   },
   "faq": {
+    "title": "FAQ",
     "avatarText": "SM",
     "handle": "spacemush_architects_chennai",
     "subtitle": "FAQ · SpaceMush Architects",
@@ -467,6 +474,7 @@ const CONTENT_POSTS = {
     "type": "G+1 Residence"
   },
   "contact": {
+    "title": "Contact SpaceMush",
     "postType": "info",
     "avatarText": "SM",
     "handle": "spacemush_architects_chennai",

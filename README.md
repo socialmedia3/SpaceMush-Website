@@ -237,6 +237,7 @@ Find its key inside `POSTS`.
 You can change:
 
 - caption
+- title (also shown in the admin feed-position dropdown)
 - subtitle
 - text
 - slide order

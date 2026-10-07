@@ -60,6 +60,10 @@ let postDraftsLoaded=false;
 let postDraftsLoadPromise=null;
 let currentEditingDraftId=null;
 const POST_DRAFT_DB='spacemush-post-drafts';
+let bundledProjectOverrides=new Set();
+let bundledGeneralOverrides=new Set();
+let bundledProjectBases={};
+let bundledProjectDataBases={};
 
 function openPostDraftDatabase(){
   return new Promise(function(resolve,reject){
@@ -266,7 +270,7 @@ function dbPostToGeneral(row){
 function applyBundledGeneralOverride(row){
   var key=String(row.slug||'').slice('bundled-'.length);
   var bundled=POSTS&&POSTS[key];
-  if(!bundled||bundled.type==='project') return;
+  if(!bundled||bundled.type==='project'||deletedPostKeys.has(key)) return;
   var content=row.content||{};
   Object.assign(bundled,content,{
     type:bundled.type,
@@ -279,10 +283,94 @@ function applyBundledGeneralOverride(row){
   bundled.slides=slides;
   bundled.images=Array.isArray(content.images)?content.images:slides.filter(function(slide){return slide.type==='image';}).map(function(slide){return slide.src;});
   setGeneralInfoSlides(key,slides,bundled.handle);
+  var runtimeKey='supabase-general-'+row.id;
+  var runtimePost=Object.assign({},content,{
+    type:'carousel',
+    author:Object.assign({},bundled.author,{name:row.handle||content.handle||bundled.handle}),
+    handle:row.handle||content.handle||bundled.handle,
+    loc:row.location||content.loc||bundled.loc,
+    subtitle:row.subtitle||content.subtitle||bundled.subtitle,
+    caption:row.caption||content.caption||bundled.caption,
+    images:bundled.images,
+    slides:slides,
+    key:runtimeKey,
+    runtimeKey:runtimeKey,
+    supabaseId:row.id,
+    bundledKey:key,
+    feedInsertBefore:content.feedInsertBefore||'top',
+    postType:'general'
+  });
+  generalPosts=generalPosts.filter(function(post){return post.bundledKey!==key;});
+  generalPosts.push(runtimePost);
+  setGeneralInfoSlides(runtimeKey,slides,runtimePost.handle);
+  bundledGeneralOverrides.add(key);
+}
+function resetBundledProjectOverrides(){
+  Object.keys(bundledProjectBases).forEach(function(key){
+    var bundled=POSTS&&POSTS[key];
+    if(bundled) Object.assign(bundled,bundledProjectBases[key],{
+      project:Object.assign({},bundledProjectBases[key].project)
+    });
+    var baseData=bundledProjectDataBases[key];
+    var index=baseData?mushData.findIndex(function(project){return String(project.id)===String(baseData.id);}):-1;
+    if(index>=0) Object.assign(mushData[index],baseData);
+  });
+  bundledProjectOverrides.clear();
+  runtimeProjectPosts=runtimeProjectPosts.filter(function(post){return !post.bundledKey;});
+}
+function applyBundledProjectOverride(row){
+  var key=String(row.slug||'').slice('bundled-'.length);
+  var bundled=POSTS&&POSTS[key];
+  if(!bundled||bundled.type!=='project'||!bundled.project||deletedPostKeys.has(key)||bundledProjectOverrides.has(key)) return;
+  if(!bundledProjectBases[key]){
+    bundledProjectBases[key]=Object.assign({},bundled,{project:Object.assign({},bundled.project)});
+    var source=mushData.find(function(project){return String(project.id)===String(bundled.project.id);});
+    if(source) bundledProjectDataBases[key]=Object.assign({},source);
+  }
+  var baseId=bundledProjectBases[key].project.id;
+  var content=row.content||{};
+  var project=Object.assign({},bundled.project,content,{
+    id:baseId,
+    bundledOverrideId:row.id,
+    title:row.title||content.title||bundled.project.title,
+    location:row.location||content.loc||bundled.project.location,
+    description:content.desc||bundled.project.description
+  });
+  Object.assign(bundled,{
+    caption:row.caption||content.caption||bundled.caption,
+    hashtags:content.hashtags||bundled.hashtags,
+    project:project
+  });
+  var projectIndex=mushData.findIndex(function(item){return String(item.id)===String(baseId);});
+  if(projectIndex<0){
+    mushData.push(Object.assign({},bundledProjectDataBases[key]||{},project,{
+      id:baseId,loc:project.location,desc:project.description
+    }));
+    projectIndex=mushData.length-1;
+  }else{
+    Object.assign(mushData[projectIndex],project,{id:baseId,loc:project.location,desc:project.description});
+  }
+  var activeProject=mushData[projectIndex];
+  runtimeProjectPosts=runtimeProjectPosts.filter(function(post){return post.bundledKey!==key;});
+  runtimeProjectPosts.push({
+    type:'project',
+    author:{name:'spacemush_architects_chennai',avatar:'SM'},
+    caption:row.caption||content.caption||'',
+    hashtags:project.hashtags||[],
+    project:activeProject,
+    supabaseId:row.id,
+    runtimeKey:'supabase-'+row.id,
+    bundledKey:key,
+    postType:'project',
+    feedInsertBefore:project.feedInsertBefore||'top',
+    createdAt:row.created_at||''
+  });
+  bundledProjectOverrides.add(key);
 }
 function applyRemotePost(row){
   if(row.slug&&row.slug.indexOf('bundled-')===0){
-    applyBundledGeneralOverride(row);
+    if(row.post_type==='project') applyBundledProjectOverride(row);
+    else applyBundledGeneralOverride(row);
     return;
   }
   if(row.post_type==='general'){
@@ -290,6 +378,16 @@ function applyRemotePost(row){
     var generalIndex=generalPosts.findIndex(function(post){return post.supabaseId===row.id;});
     if(generalIndex<0) generalPosts.push(general);
     else generalPosts[generalIndex]=general;
+    return;
+  }
+  var bundledProjectKey=Object.keys(POSTS||{}).find(function(key){
+    var bundled=POSTS[key];
+    return bundled.type==='project'&&bundled.project&&
+      String(bundled.project.id)===String((row.content||{}).id)&&
+      bundled.project.handle===row.handle;
+  });
+  if(bundledProjectKey){
+    applyBundledProjectOverride(Object.assign({},row,{slug:'bundled-'+bundledProjectKey}));
     return;
   }
   var project=dbPostToProject(row);
@@ -302,7 +400,7 @@ function applyRemotePost(row){
   runtimeProjectPosts=runtimeProjectPosts.filter(function(p){return p.supabaseId!==row.id;});
   runtimeProjectPosts.push({type:'project',author:{name:row.handle||'spacemush_architects_chennai',avatar:'SM'},
     caption:row.caption||'',hashtags:project.hashtags||[],project:project,supabaseId:row.id,
-    runtimeKey:'supabase-'+row.id,postType:'project',feedInsertBefore:'top',createdAt:row.created_at||''});
+    runtimeKey:'supabase-'+row.id,postType:'project',feedInsertBefore:project.feedInsertBefore||'top',createdAt:row.created_at||''});
 }
 async function loadSupabaseContent(){
   if(!hasSupabase()) return;
@@ -330,6 +428,8 @@ async function loadSupabaseContent(){
     for(var i=mushData.length-1;i>=0;i--) if(mushData[i].supabaseId) mushData.splice(i,1);
     runtimeProjectPosts=runtimeProjectPosts.filter(function(post){return !post.supabaseId;});
     generalPosts=generalPosts.filter(function(post){return !post.supabaseId;});
+    resetBundledProjectOverrides();
+    bundledGeneralOverrides.clear();
     (posts.data||[]).forEach(applyRemotePost);
     var stories=await supabaseClient.from('stories').select('*').eq('published',true).eq('is_archived',false).gt('expires_at',new Date().toISOString());
     if(!stories.error) (stories.data||[]).forEach(function(s){
@@ -337,6 +437,7 @@ async function loadSupabaseContent(){
       if(p){p.hasStory=true;p.storyCaption=s.caption||p.storyCaption;p.images=(s.image_url?[s.image_url]:p.images);}
     });
     renderFeed(); renderStories(); renderProjectsGrid();
+    populateFeedPositionOptions();
   }catch(error){ console.warn('Supabase public content unavailable; using bundled data.',error); }
 }
 async function loadArchivedRemotePosts(){
@@ -361,6 +462,7 @@ async function runPostLifecycle(postId,action){
     await loadSupabaseContent();
     await loadArchivedRemotePosts();
     renderFeed(); renderStories(); renderProjectsGrid(); renderAdminPosts(); renderAdminDashboard();
+    populateFeedPositionOptions();
     return true;
   }catch(error){
     console.error('Post lifecycle operation failed:',action,postId,error);
@@ -409,7 +511,10 @@ async function ensureProjectStory(project,userId){
 }
 async function persistProjectPost(project){
   if(!hasSupabase()||!adminLoggedIn) throw new Error('A signed-in administrator and Supabase connection are required to save posts.');
-  var row={slug:'runtime-'+String(project.handle||'post').toLowerCase().replace(/[^a-z0-9]+/g,'-')+'-'+Date.now(),
+  var bundledKey=project.bundledKey||Object.keys(POSTS||{}).find(function(key){
+    return POSTS[key].type==='project'&&POSTS[key].project&&String(POSTS[key].project.id)===String(project.id);
+  });
+  var row={slug:bundledKey?'bundled-'+bundledKey:'runtime-'+String(project.handle||'post').toLowerCase().replace(/[^a-z0-9]+/g,'-')+'-'+Date.now(),
     title:project.title||project.handle,handle:project.handle||'spacemush_architects_chennai',
     subtitle:project.loc||'Chennai',caption:project.caption||'',location:project.loc||'Chennai',
     category:project.category||'residential',post_type:'project',content:project,published:true};
@@ -417,10 +522,18 @@ async function persistProjectPost(project){
   if(auth.error) throw auth.error;
   var user=auth.data&&auth.data.user;
   if(!user) throw new Error('No signed-in administrator');
-  if(project.supabaseId){
+  var existingPostId=project.supabaseId||project.bundledOverrideId;
+  if(!existingPostId&&bundledKey){
+    var existingOverride=await supabaseClient.from('posts').select('id').eq('slug',row.slug).maybeSingle();
+    if(existingOverride.error) throw existingOverride.error;
+    if(existingOverride.data) existingPostId=existingOverride.data.id;
+  }
+  if(existingPostId){
     delete row.slug;
-    var update=await supabaseClient.from('posts').update(row).eq('id',project.supabaseId);
+    var update=await supabaseClient.from('posts').update(row).eq('id',existingPostId);
     if(update.error) throw update.error;
+    if(bundledKey) project.bundledOverrideId=existingPostId;
+    else project.supabaseId=existingPostId;
     try{ await ensureProjectStory(project,user.id); }
     catch(error){ console.error('Post was saved, but its story could not be updated:',error); }
     await loadSupabaseContent();
@@ -429,7 +542,10 @@ async function persistProjectPost(project){
   row.created_by=user.id;
   var result=await supabaseClient.from('posts').insert(row).select().single();
   if(result.error) throw result.error;
-  project.supabaseId=result.data.id;
+  if(bundledKey){
+    project.bundledKey=bundledKey;
+    project.bundledOverrideId=result.data.id;
+  }else project.supabaseId=result.data.id;
   try{ await ensureProjectStory(project,user.id); }
   catch(error){ console.error('Post was saved, but its story could not be created:',error); }
   applyRemotePost(result.data);
@@ -897,12 +1013,37 @@ function renderFeed(){
     : ['where-it-all-begins','la-perle','who-ssr','anna-nagar','how-we-design','nathans-home','who-we-are','how-to-find-us','contact','faq'];
   const parts=[];
   var runtimePosts=runtimeProjectPosts.concat(generalPosts);
+  var activeStaticAnchors=new Set();
+  mixed.forEach(function(item){
+    var key=typeof item==='string'?item:(item.key||item.id);
+    var post=(typeof POSTS!=='undefined'&&POSTS)?POSTS[key]:null;
+    if(key&&post&&!bundledProjectOverrides.has(key)&&!bundledGeneralOverrides.has(key)&&
+      !deletedPostKeys.has(key)&&!archivedPostKeys.has(key)) activeStaticAnchors.add(key);
+  });
+  var activeRuntimeAnchors=new Set(runtimePosts.filter(function(post){
+    var key=post.runtimeKey||post.key;
+    return key&&!archivedPostKeys.has(key)&&!(post.bundledKey&&deletedPostKeys.has(post.bundledKey));
+  }).map(function(post){return post.runtimeKey||post.key;}));
+  var renderedRuntimePosts=new Set();
+  var renderingRuntimePosts=new Set();
   function addRuntimePosts(position){
-    runtimePosts.filter(function(post){return (post.feedInsertBefore||'top')===position&&!archivedPostKeys.has(post.runtimeKey);}).sort(function(a,b){
+    runtimePosts.filter(function(post){
+      var key=post.runtimeKey||post.key;
+      var feedPosition=post.feedInsertBefore||'top';
+      if(feedPosition!=='top'&&feedPosition!=='bottom'&&!activeStaticAnchors.has(feedPosition)&&!activeRuntimeAnchors.has(feedPosition)) feedPosition='top';
+      return feedPosition===position&&!renderedRuntimePosts.has(key)&&!renderingRuntimePosts.has(key)&&
+        !archivedPostKeys.has(key)&&!(post.bundledKey&&deletedPostKeys.has(post.bundledKey));
+    }).sort(function(a,b){
       return new Date(b.createdAt||0)-new Date(a.createdAt||0);
     }).forEach(function(post){
+      var key=post.runtimeKey||post.key;
+      if(!key||renderedRuntimePosts.has(key)||renderingRuntimePosts.has(key)) return;
+      renderingRuntimePosts.add(key);
+      addRuntimePosts(key);
+      renderingRuntimePosts.delete(key);
+      renderedRuntimePosts.add(key);
       var index=runtimePosts.indexOf(post);
-      parts.push(buildUniversalPostCard(post,post.runtimeKey||('runtime-post-'+index),parts.length));
+      parts.push(buildUniversalPostCard(post,key||('runtime-post-'+index),parts.length));
     });
   }
   addRuntimePosts('top');
@@ -911,7 +1052,7 @@ function renderFeed(){
       const key=typeof item==='string' ? item : (item.key || item.id);
       addRuntimePosts(key);
       const post=(typeof POSTS!=='undefined' && POSTS) ? POSTS[key] : null;
-      if(post&&!deletedPostKeys.has(key)&&!archivedPostKeys.has(key)) parts.push(buildUniversalPostCard(post,key,position));
+      if(post&&!bundledProjectOverrides.has(key)&&!bundledGeneralOverrides.has(key)&&!deletedPostKeys.has(key)&&!archivedPostKeys.has(key)) parts.push(buildUniversalPostCard(post,key,position));
     }catch(err){
       console.error('SpaceMush feed post '+position+' failed:',err);
       // Keep the rest of the feed usable if one post contains bad data.
@@ -1808,6 +1949,7 @@ function openCreatePost(editIndex){
     document.getElementById('cp-architect').value=m.architect;
     document.getElementById('cp-client').value=m.client||'';
     document.getElementById('cp-contractor').value=m.contractor||'';
+    if(el('cp-feed-position')) el('cp-feed-position').value=m.feedInsertBefore||'top';
     document.getElementById('cp-caption').value=m.caption;
     document.getElementById('cp-desc').value=m.desc;
     // Set emoji preview
@@ -1889,12 +2031,29 @@ function populateFeedPositionOptions(){
   if(!select) return;
   var mixed=(typeof FEED_CONFIG!=='undefined'&&Array.isArray(FEED_CONFIG))?FEED_CONFIG:[];
   var options='<option value="top">Top of feed</option>';
+  var anchors=[];
+  var seen=new Set();
   mixed.forEach(function(item){
     var key=typeof item==='string'?item:(item.key||item.id);
     var post=(typeof POSTS!=='undefined'&&POSTS)?POSTS[key]:null;
-    if(!key||!post) return;
-    var label=post.title||post.handle||post.subtitle||key;
-    options+='<option value="'+key+'">Before: '+label+'</option>';
+    if(!key||!post||bundledProjectOverrides.has(key)||bundledGeneralOverrides.has(key)||
+      deletedPostKeys.has(key)||archivedPostKeys.has(key)||seen.has(key)) return;
+    seen.add(key);
+    anchors.push({key:key,label:post.title||post.project&&post.project.title||post.handle||post.subtitle||key});
+  });
+  runtimeProjectPosts.concat(generalPosts).forEach(function(post){
+    var key=post.runtimeKey||post.key;
+    if(!key||seen.has(key)||archivedPostKeys.has(key)||
+      post.bundledKey&&(deletedPostKeys.has(post.bundledKey)||archivedPostKeys.has(post.bundledKey))) return;
+    seen.add(key);
+    var project=post.project;
+    var label=project
+      ? project.title||projectDisplayName(project)||project.handle
+      : post.title||post.handle||post.author&&post.author.name||post.subtitle||key;
+    anchors.push({key:key,label:label});
+  });
+  anchors.forEach(function(anchor){
+    options+='<option value="'+escapeHTML(anchor.key)+'">Before: '+escapeHTML(anchor.label)+'</option>';
   });
   options+='<option value="bottom">Bottom of feed</option>';
   select.innerHTML=options;
@@ -2122,6 +2281,7 @@ async function publishMush(){
       closeCreatePost();
       renderFeed();
       renderAdminPosts();
+      populateFeedPositionOptions();
       toast('✅ General post updated!');
       return;
     }
@@ -2140,6 +2300,7 @@ async function publishMush(){
     closeCreatePost();
     renderFeed();
     renderAdminPosts();
+    populateFeedPositionOptions();
     toast('🚀 General carousel published!'+draftCleanupNotice);
     return;
   }
@@ -2170,6 +2331,7 @@ async function publishMush(){
     architect:document.getElementById('cp-architect').value||'Karthik R.',
     client:document.getElementById('cp-client').value||'—',
     contractor:document.getElementById('cp-contractor').value||'—',
+    feedInsertBefore:(el('cp-feed-position')||{}).value||'top',
     likes:0,comments:0,
     hasStory:document.getElementById('cp-story-toggle').checked,
     storyCaption:document.getElementById('cp-story-toggle').checked?'Check out our latest project!':'',
@@ -2190,6 +2352,9 @@ async function publishMush(){
     var previousProject=Object.assign({},editingProject);
     Object.assign(editingProject,{...newMush,
       id:editingProject.id,
+      supabaseId:editingProject.supabaseId,
+      bundledKey:editingProject.bundledKey,
+      bundledOverrideId:editingProject.bundledOverrideId,
       likes:editingProject.likes,
       comments:editingProject.comments,
     });
@@ -2204,16 +2369,6 @@ async function publishMush(){
     toast('✅ Mush post updated!');
   } else {
     mushData.push(newMush);
-    runtimeProjectPosts.push({
-      type:'project',
-      author:{name:'spacemush_architects_chennai',avatar:'SM'},
-      caption:newMush.caption,
-      hashtags:newMush.hashtags||[],
-      project:Object.assign({},newMush,{title:newMush.title,location:newMush.loc,description:newMush.desc}),
-      runtimeKey:'runtime-project-'+runtimeProjectPosts.length,
-      feedInsertBefore:(el('cp-feed-position')||{}).value||'top',
-      postType:'project'
-    });
     try{ await persistProjectPost(newMush); }
     catch(error){
       console.error('Project publish failed:',error);
@@ -2235,6 +2390,7 @@ async function publishMush(){
   renderProjectsGrid();
   renderAdminPosts();
   setupScrollReveal();
+  populateFeedPositionOptions();
 }
 
 function tagToCategory(tag){
@@ -2269,6 +2425,7 @@ async function deleteMush(i,confirmed){
   renderStories();
   renderProjectsGrid();
   renderAdminPosts();
+  populateFeedPositionOptions();
   toast('🗑️ Mush post deleted');
 }
 
@@ -3085,17 +3242,19 @@ async function adminDeleteGeneralPost(key){
   renderStories();
   renderAdminPosts();
   renderAdminDashboard();
+  populateFeedPositionOptions();
   toast('🗑️ '+label+' deleted');
 }
 
 async function adminToggleArchive(key){
   if(!key) return;
-  var project=mushData.find(function(post){return post.supabaseId===key || 'supabase-'+post.supabaseId===key;}) ||
+  var project=mushData.find(function(post){return post.supabaseId===key || 'supabase-'+post.supabaseId===key || post.bundledOverrideId===key || 'supabase-'+post.bundledOverrideId===key;}) ||
     generalPosts.find(function(post){return post.key===key||post.supabaseId===key||'supabase-'+post.supabaseId===key;}) ||
     archivedRemotePosts.find(function(post){return post.supabaseId===key || 'supabase-'+post.supabaseId===key;});
-  if(project&&project.supabaseId){
+  var postId=project&&(project.supabaseId||project.bundledOverrideId);
+  if(postId){
     var action=project.isArchived?'unarchive':'archive';
-    if(await runPostLifecycle(project.supabaseId,action)) toast(action==='archive'?'▱ Post and associated stories archived':'↥ Post and associated stories restored');
+    if(await runPostLifecycle(postId,action)) toast(action==='archive'?'▱ Post and associated stories archived':'↥ Post and associated stories restored');
     return;
   }
   if(archivedPostKeys.has(key)){
@@ -3108,6 +3267,7 @@ async function adminToggleArchive(key){
   renderFeed();
   renderAdminPosts();
   renderAdminDashboard();
+  populateFeedPositionOptions();
 }
 
 // ─── COMMENTS ─────────────────────────────────────────────────

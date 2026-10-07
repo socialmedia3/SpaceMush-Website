@@ -1292,7 +1292,7 @@ const infoPosts={
     {inner:`<div class="info-slide-icon">📍</div>
       <div class="info-slide-heading">Visit Our Office</div>
       <div class="info-slide-body">
-        <p><strong>55, A3 Swati Sahana Apartments</strong><br>2nd Floor, KB Dasan Road<br>Alwarpet, Chennai – 600018</p>
+        <p><strong>55, B2 Swati Sahana Apartments</strong><br>2nd Floor, KB Dasan Road<br>Alwarpet, Chennai – 600018</p>
         <p>Corner building on KB Dasan Road. From SIET College Road, it's on your LEFT. From TTK Road, it's on your RIGHT.</p>
         <p>Ground floor identifiers: <strong>Dakshin Art Gallery</strong> and <strong>Dental Clinic</strong>. SpaceMush is on the 2nd Floor.</p>
         <button class="info-slide-btn" onclick="window.open('https://maps.app.goo.gl/myANNorCUc2HB3qeA','_blank')">📍 Open in Google Maps</button>

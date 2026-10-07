@@ -201,7 +201,7 @@ const CONTENT_POSTS = {
         "theme": "coral",
         "icon": "📍",
         "heading": "How to Find Us",
-        "bodyHtml": "<p><strong>55, A3 Swati Sahana Apartments</strong><br>2nd Floor, KB Dasan Road<br>Alwarpet, Chennai – 600018</p><p>Corner building on KB Dasan Road. From SIET College Road, it is on your LEFT. From TTK Road, it is on your RIGHT.</p><p>Ground-floor identifiers: <strong>Dakshin Art Gallery</strong> and <strong>Dental Clinic</strong>.</p><button class=\"info-slide-btn\" onclick=\"window.open('https://maps.app.goo.gl/myANNorCUc2HB3qeA','_blank')\">📍 Open in Google Maps</button>"
+        "bodyHtml": "<p><strong>55, B2 Swati Sahana Apartments</strong><br>2nd Floor, KB Dasan Road<br>Alwarpet, Chennai – 600018</p><p>Corner building on KB Dasan Road. From SIET College Road, it is on your LEFT. From TTK Road, it is on your RIGHT.</p><p>Ground-floor identifiers: <strong>Dakshin Art Gallery</strong> and <strong>Dental Clinic</strong>.</p><button class=\"info-slide-btn\" onclick=\"window.open('https://maps.app.goo.gl/myANNorCUc2HB3qeA','_blank')\">📍 Open in Google Maps</button>"
       },
       {
         "type": "image",

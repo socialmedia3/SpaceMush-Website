@@ -452,6 +452,7 @@
       <span class="admin-topbar-badge">Admin</span>
     </div>
     <div style="margin-left:16px;font-size:12px;color:rgba(255,255,255,0.3)">Logged in as <span style="color:rgba(255,255,255,0.7)" id="adminUserLabel">—</span></div>
+    <button class="admin-topbar-close" onclick="adminLogout()">Log out</button>
     <button class="admin-topbar-close" onclick="closeAdminPanel()">✕ Close Panel</button>
   </div>
   <div class="admin-body">
@@ -529,7 +530,7 @@
         </div>
         <div class="admin-posts-toolbar">
           <label class="admin-search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input id="adminPostSearch" type="search" placeholder="Search posts, locations, tags..." oninput="renderAdminPosts()"></label>
-          <select id="adminPostFilter" class="admin-filter-select" onchange="renderAdminPosts()"><option value="all">Live posts</option><option value="drafts">Drafts</option><option value="archived">Archived</option><option value="story">With stories</option><option value="residential">Residential</option><option value="commercial">Commercial</option><option value="recent">Newest first</option></select>
+          <select id="adminPostFilter" class="admin-filter-select" onchange="renderAdminPosts()"><option value="published">Published</option><option value="drafts">Drafts</option><option value="archived">Archived</option><option value="deleted">Deleted Posts</option><option value="story">With stories</option><option value="residential">Residential</option><option value="commercial">Commercial</option><option value="recent">Newest first</option></select>
           <div class="admin-post-count" id="adminPostCount"></div>
         </div>
         <div class="admin-posts-grid" id="adminPostsGrid"></div>

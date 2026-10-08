@@ -347,12 +347,30 @@ existing local archive if the network is unavailable. RLS policies protect
 drafts, admin data, and notifications.
 
 Admin-created project and general carousel posts are stored in `public.posts`.
-Deleting a bundled post stores a deletion marker in `public.bundled_post_state`,
-so it stays hidden after refresh instead of returning from `js/data.js`. After
-updating the backend schema, run the full `supabase-schema.sql` script again in
-the Supabase SQL editor before using post management.
+Uploaded photos are resized and compressed in the browser, then stored in the
+public `post-media` Supabase Storage bucket; post JSON stores image URLs rather
+than large base64 payloads. The schema script creates the bucket and restricts
+uploads to authenticated admins in their own storage folder.
+Normal deletion moves a post to **Manage posts → Deleted Posts** using the
+`is_deleted` lifecycle flag; restore returns it to its previous published,
+archived, or draft state. Permanent deletion is a separate, explicit action.
+Bundled posts use `public.bundled_post_state` as a recoverable tombstone so
+deleted content does not return from `js/data.js`. Carousel slides and image
+references are stored inside the post's JSON content and are updated together
+in one atomic row update; removing a slide never deletes its parent post. Story
+rows are detached rather than cascaded if a post is permanently deleted.
 
-Unpublished editor drafts are saved in this browser and can be found in
-**Manage posts → Drafts**. Select a draft to continue editing, then publish it
-from the editor. Draft images are kept in browser storage and are not sent to
-the public feed until the post is published.
+Unpublished drafts are kept in browser storage for offline editing and, when
+the admin is authenticated, synchronized to `public.posts` so they are
+available to other signed-in devices. The admin session uses Supabase Auth's
+persistent session and token refresh. The login state is always checked
+against `admin_users`; logout signs out of Supabase.
+
+After updating the backend schema, run the full `supabase-schema.sql` script in
+the Supabase SQL editor before using lifecycle, trash, cloud-draft, or image
+upload features. This is required to provision the `post-media` bucket and its
+access policies.
+
+Drafts can be found in **Manage posts → Drafts**. Select one to continue
+editing, then publish it from the editor. Draft images are not sent to the
+public feed until the post is published.

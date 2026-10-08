@@ -36,6 +36,8 @@ let toastTimer=null;
 let studioLoggedIn=false;
 let adminLoggedIn=false;
 let currentAdminEmail='';
+let adminSessionRestorePromise=null;
+let postSavePending=false;
 let currentEditIndex=-1; // -1 = new post, >=0 = editing existing
 let storyViewerMushIndex=-1;
 let storyTimerRef=null;
@@ -49,17 +51,23 @@ let cardImgIdx={}; // {postIndex: currentImageIndex} for feed/grid card carousel
 let projCardImgIdx={}; // {postIndex: currentImageIndex} for the Projects-page post carousels (kept separate from cardImgIdx so Home + Projects can render the same project independently without DOM id clashes)
 let modalImgIdx=0; // current image index inside the project modal carousel
 let selectedPostImages=[]; // data URLs selected in the post editor
+const POST_MEDIA_BUCKET='post-media';
 let generalPosts=[]; // runtime-created general carousel posts
 let runtimeProjectPosts=[]; // project posts created from the admin editor this session
 let currentEditGeneralKey=null;
 let deletedPostKeys=new Set();
+let permanentlyDeletedPostKeys=new Set();
 let archivedPostKeys=new Set();
 let archivedRemotePosts=[];
+let deletedRemotePosts=[];
+let remoteDraftPosts=[];
+let remoteDraftsLoaded=false;
 let lifecyclePending=new Set();
 let postDrafts=[];
 let postDraftsLoaded=false;
 let postDraftsLoadPromise=null;
 let currentEditingDraftId=null;
+let currentEditingDraftRemoteId=null;
 const POST_DRAFT_DB='spacemush-post-drafts';
 let bundledProjectOverrides=new Set();
 let bundledGeneralOverrides=new Set();
@@ -221,6 +229,15 @@ let reachUsMessages=[];
 function hasSupabase(){
   return typeof supabaseClient!=='undefined' && supabaseClient && supabaseClient.from;
 }
+function supabaseSchemaErrorMessage(error){
+  var message=String(error&&(error.message||error.details)||'');
+  var code=String(error&&error.code||'');
+  if(code==='42703'||code==='PGRST204'||code==='PGRST202'||
+    /column .* does not exist|schema cache.*(column|function)/i.test(message)){
+    return 'Supabase database schema is out of date. Run the full supabase-schema.sql script in Supabase SQL Editor, then reload the site.';
+  }
+  return '';
+}
 function remotePostIndex(postId,postKey){
   return mushData.findIndex(function(post){
     return post.supabaseId===postId || post.supabaseId===postKey || post.handle===postKey;
@@ -262,6 +279,7 @@ function dbPostToGeneral(row){
     runtimeKey:key,
     supabaseId:row.id,
     createdAt:row.created_at||'',
+    publishedAt:row.published_at||'',
     feedInsertBefore:content.feedInsertBefore||'top',
     postType:'general'
   });
@@ -279,7 +297,8 @@ function applyBundledGeneralOverride(row){
     handle:row.handle||content.handle||bundled.handle,
     loc:row.location||content.loc||bundled.loc,
     subtitle:row.subtitle||content.subtitle||bundled.subtitle,
-    caption:row.caption||content.caption||bundled.caption
+    caption:row.caption||content.caption||bundled.caption,
+    publishedAt:row.published_at||''
   });
   var slides=Array.isArray(content.slides)?content.slides:[];
   bundled.slides=slides;
@@ -299,6 +318,7 @@ function applyBundledGeneralOverride(row){
     runtimeKey:runtimeKey,
     supabaseId:row.id,
     bundledKey:key,
+    publishedAt:row.published_at||'',
     feedInsertBefore:content.feedInsertBefore||'top',
     postType:'general'
   });
@@ -337,7 +357,8 @@ function applyBundledProjectOverride(row){
     bundledOverrideId:row.id,
     title:row.title||content.title||bundled.project.title,
     location:row.location||content.loc||bundled.project.location,
-    description:content.desc||bundled.project.description
+    description:content.desc||bundled.project.description,
+    publishedAt:row.published_at||''
   });
   Object.assign(bundled,{
     caption:row.caption||content.caption||bundled.caption,
@@ -395,6 +416,7 @@ function applyRemotePost(row){
   }
   var project=dbPostToProject(row);
   project.supabaseId=row.id;
+  project.publishedAt=row.published_at||'';
   project.published=row.published;
   project.isArchived=!!row.is_archived;
   var idx=mushData.findIndex(function(p){return p.supabaseId===row.id;});
@@ -408,12 +430,14 @@ function applyRemotePost(row){
 async function loadSupabaseContent(){
   if(!hasSupabase()) return;
   try{
-    var posts=await supabaseClient.from('posts').select('*').eq('published',true).eq('is_archived',false).order('created_at',{ascending:false});
+    var posts=await supabaseClient.from('posts').select('*').eq('published',true).eq('is_archived',false).eq('is_deleted',false).order('created_at',{ascending:false});
     if(posts.error) throw posts.error;
-    var hidden=await supabaseClient.from('bundled_post_state').select('post_key').eq('is_deleted',true);
+    var hidden=await supabaseClient.from('bundled_post_state').select('post_key,is_deleted,is_archived,is_permanently_deleted');
     if(hidden.error) console.error('Could not load deleted bundled posts:',hidden.error.message);
     else{
-      deletedPostKeys=new Set((hidden.data||[]).map(function(row){return row.post_key;}));
+      deletedPostKeys=new Set((hidden.data||[]).filter(function(row){return row.is_deleted||row.is_permanently_deleted;}).map(function(row){return row.post_key;}));
+      archivedPostKeys=new Set((hidden.data||[]).filter(function(row){return row.is_archived;}).map(function(row){return row.post_key;}));
+      permanentlyDeletedPostKeys=new Set((hidden.data||[]).filter(function(row){return row.is_permanently_deleted;}).map(function(row){return row.post_key;}));
       Object.keys(POSTS||{}).forEach(function(key){
         var bundled=POSTS[key];
         if(bundled.type==='project'&&bundled.project&&deletedPostKeys.has(key)){
@@ -422,6 +446,12 @@ async function loadSupabaseContent(){
             if(!mushData[projectIndex].supabaseId&&String(mushData[projectIndex].id)===projectId) mushData.splice(projectIndex,1);
           }
           runtimeProjectPosts=runtimeProjectPosts.filter(function(post){return !post.project||String(post.project.id)!==projectId;});
+        }else if(bundled.type==='project'&&bundled.project&&
+          !mushData.some(function(project){return !project.supabaseId&&String(project.id)===String(bundled.project.id);})){
+          mushData.push(Object.assign({},bundled.project,{
+            loc:bundled.project.location||bundled.project.loc||'Chennai',
+            desc:bundled.project.description||bundled.project.desc||''
+          }));
         }
       });
     }
@@ -437,10 +467,11 @@ async function loadSupabaseContent(){
     var stories=await supabaseClient.from('stories').select('*').eq('published',true).eq('is_archived',false).gt('expires_at',new Date().toISOString());
     if(!stories.error) (stories.data||[]).forEach(function(s){
       var p=mushData.find(function(x){return x.supabaseId===s.post_id;});
-      if(p){p.hasStory=true;p.storyCaption=s.caption||p.storyCaption;p.images=(s.image_url?[s.image_url]:p.images);}
+      if(p){p.hasStory=true;p.storyCaption=s.caption||p.storyCaption;}
     });
     renderFeed(); renderStories(); renderProjectsGrid();
     populateFeedPositionOptions();
+    renderAdminDashboard();
   }catch(error){ console.warn('Supabase public content unavailable; using bundled data.',error); }
 }
 async function loadArchivedRemotePosts(){
@@ -449,7 +480,7 @@ async function loadArchivedRemotePosts(){
     var previousKey=String(post.slug||'').indexOf('bundled-')===0?String(post.slug).slice('bundled-'.length):'';
     if(previousKey) archivedPostKeys.delete(previousKey);
   });
-  var result=await supabaseClient.from('posts').select('*').eq('is_archived',true).order('created_at',{ascending:false});
+  var result=await supabaseClient.from('posts').select('*').eq('is_archived',true).eq('is_deleted',false).order('created_at',{ascending:false});
   if(result.error){ console.warn('Could not load archived posts:',result.error.message); return; }
   archivedRemotePosts=(result.data||[]).map(function(row){
     var bundledKey=String(row.slug||'').indexOf('bundled-')===0?String(row.slug).slice('bundled-'.length):'';
@@ -461,6 +492,53 @@ async function loadArchivedRemotePosts(){
     return post;
   });
 }
+async function loadDeletedRemotePosts(){
+  if(!hasSupabase()||!adminLoggedIn) return;
+  var result=await supabaseClient.from('posts').select('*').eq('is_deleted',true).order('updated_at',{ascending:false});
+  if(result.error) throw result.error;
+  deletedRemotePosts=(result.data||[]).map(function(row){
+    var post=row.post_type==='general'?dbPostToGeneral(row):dbPostToProject(row);
+    post.supabaseId=row.id;
+    post.isDeleted=true;
+    post.isArchived=!!row.is_archived;
+    post.bundledKey=String(row.slug||'').indexOf('bundled-')===0?String(row.slug).slice('bundled-'.length):'';
+    post.postType=row.post_type;
+    if(post.bundledKey) deletedPostKeys.add(post.bundledKey);
+    return post;
+  });
+}
+async function loadSupabaseAdminDrafts(){
+  if(!hasSupabase()||!adminLoggedIn) return;
+  var result=await supabaseClient.from('posts').select('*').eq('published',false).eq('is_archived',false).eq('is_deleted',false).order('updated_at',{ascending:false});
+  if(result.error) throw result.error;
+  remoteDraftPosts=(result.data||[]).map(function(row){
+    var post=row.post_type==='general'?dbPostToGeneral(row):dbPostToProject(row);
+    post.supabaseId=row.id;
+    post.isDraft=true;
+    post.postType=row.post_type;
+    return post;
+  });
+  remoteDraftsLoaded=true;
+}
+async function syncLocalDraftLifecycle(postId,action){
+  if(!postId) return;
+  try{
+    await loadPostDrafts();
+    var linked=postDrafts.filter(function(draft){return draft.remotePostId===postId;});
+    for(var i=0;i<linked.length;i++){
+      if(action==='permanent_delete') await removePostDraft(linked[i].id);
+      else{
+        linked[i].isDeleted=action==='delete';
+        if(action==='delete') linked[i].deletedAt=new Date().toISOString();
+        else delete linked[i].deletedAt;
+        await storePostDraft(linked[i]);
+      }
+    }
+  }catch(error){
+    console.error('Local draft lifecycle sync failed:',postId,action,error);
+    toast('Post status was updated, but its browser draft copy could not be synchronized.');
+  }
+}
 async function runPostLifecycle(postId,action){
   if(!postId||!hasSupabase()||!adminLoggedIn) return false;
   if(lifecyclePending.has(postId)) return false;
@@ -469,14 +547,18 @@ async function runPostLifecycle(postId,action){
   try{
     var result=await supabaseClient.rpc('manage_post_lifecycle',{p_post_id:postId,p_action:action});
     if(result.error) throw result.error;
+    await syncLocalDraftLifecycle(postId,action);
     await loadSupabaseContent();
     await loadArchivedRemotePosts();
+    await loadDeletedRemotePosts();
+    remoteDraftsLoaded=false;
+    await loadSupabaseAdminDrafts();
     renderFeed(); renderStories(); renderProjectsGrid(); renderAdminPosts(); renderAdminDashboard();
     populateFeedPositionOptions();
     return true;
   }catch(error){
     console.error('Post lifecycle operation failed:',action,postId,error);
-    toast('Could not '+action+' this post. Nothing was changed.');
+    toast(supabaseSchemaErrorMessage(error)||('Could not '+action+' this post. Nothing was changed.'));
     return false;
   }finally{
     lifecyclePending.delete(postId);
@@ -487,6 +569,8 @@ async function loadSupabaseAdminData(){
   if(!hasSupabase()||!adminLoggedIn) return;
   try{
     await loadArchivedRemotePosts();
+    await loadDeletedRemotePosts();
+    await loadSupabaseAdminDrafts();
     var results=await Promise.all([
       supabaseClient.from('comments').select('*').order('created_at',{ascending:false}).limit(500),
       supabaseClient.from('reach_us_messages').select('*').order('created_at',{ascending:false}).limit(500),
@@ -508,9 +592,11 @@ async function loadSupabaseAdminData(){
       console.error('Some Supabase admin data could not be loaded:',failures);
       toast('Some admin data could not be loaded: '+failures.join('; '));
     }
+    renderAdminDashboard();
+    renderAdminPosts();
   }catch(error){
     console.error('Supabase admin data unavailable:',error);
-    toast('Could not load admin data: '+(error.message||'check your connection.'));
+    toast(supabaseSchemaErrorMessage(error)||('Could not load admin data: '+(error.message||'check your connection.')));
   }
 }
 async function persistNotification(n){
@@ -525,6 +611,7 @@ async function ensureProjectStory(project,userId){
   var created=await supabaseClient.from('stories').insert({
     post_id:project.supabaseId,
     caption:project.storyCaption||'Check out our latest project!',
+    image_url:Array.isArray(project.images)?project.images[0]||null:null,
     visual:project.emoji||'✨',
     story_type:'mush',
     published:true,
@@ -541,16 +628,26 @@ async function persistProjectPost(project){
   var row={slug:bundledKey?'bundled-'+bundledKey:'runtime-'+String(project.handle||'post').toLowerCase().replace(/[^a-z0-9]+/g,'-')+'-'+Date.now(),
     title:project.title||project.handle,handle:project.handle||'spacemush_architects_chennai',
     subtitle:project.loc||'Chennai',caption:project.caption||'',location:project.loc||'Chennai',
-    category:project.category||'residential',post_type:'project',content:project,published:true};
+    category:project.category||'residential',post_type:'project',content:project,published:true,
+    published_at:project.publishedAt||new Date().toISOString()};
   var auth=await supabaseClient.auth.getUser();
   if(auth.error) throw auth.error;
   var user=auth.data&&auth.data.user;
   if(!user) throw new Error('No signed-in administrator');
+  var storedProject=await uploadPostContentImages(
+    project,
+    'post-'+(project.supabaseId||project.bundledOverrideId||postImageObjectKey()),
+    user.id
+  );
+  row.content=storedProject;
   var existingPostId=project.supabaseId||project.bundledOverrideId;
   if(!existingPostId&&bundledKey){
-    var existingOverride=await supabaseClient.from('posts').select('id').eq('slug',row.slug).maybeSingle();
+    var existingOverride=await supabaseClient.from('posts').select('id,published_at').eq('slug',row.slug).maybeSingle();
     if(existingOverride.error) throw existingOverride.error;
-    if(existingOverride.data) existingPostId=existingOverride.data.id;
+    if(existingOverride.data){
+      existingPostId=existingOverride.data.id;
+      row.published_at=existingOverride.data.published_at||row.published_at;
+    }
   }
   if(existingPostId){
     delete row.slug;
@@ -558,9 +655,8 @@ async function persistProjectPost(project){
     if(update.error) throw update.error;
     if(bundledKey) project.bundledOverrideId=existingPostId;
     else project.supabaseId=existingPostId;
-    try{ await ensureProjectStory(project,user.id); }
+    try{ await ensureProjectStory(Object.assign({},storedProject,{supabaseId:existingPostId}),user.id); }
     catch(error){ console.error('Post was saved, but its story could not be updated:',error); }
-    await loadSupabaseContent();
     return;
   }
   row.created_by=user.id;
@@ -570,10 +666,10 @@ async function persistProjectPost(project){
     project.bundledKey=bundledKey;
     project.bundledOverrideId=result.data.id;
   }else project.supabaseId=result.data.id;
-  try{ await ensureProjectStory(project,user.id); }
+  storedProject.supabaseId=result.data.id;
+  try{ await ensureProjectStory(storedProject,user.id); }
   catch(error){ console.error('Post was saved, but its story could not be created:',error); }
   applyRemotePost(result.data);
-  await loadSupabaseContent();
 }
 async function persistGeneralPost(post,bundledKey){
   if(!hasSupabase()||!adminLoggedIn) throw new Error('A signed-in administrator and Supabase connection are required to save posts.');
@@ -581,6 +677,8 @@ async function persistGeneralPost(post,bundledKey){
   if(auth.error) throw auth.error;
   var user=auth.data&&auth.data.user;
   if(!user) throw new Error('No signed-in administrator');
+  var storageOwner='post-'+(post.supabaseId||postImageObjectKey());
+  var storedPost=await uploadPostContentImages(post,storageOwner,user.id);
   var handle=post.handle||post.author&&post.author.name||'SpaceMush Studio';
   var row={
     slug:bundledKey?'bundled-'+bundledKey:'carousel-'+String(handle).toLowerCase().replace(/[^a-z0-9]+/g,'-')+'-'+Date.now(),
@@ -591,24 +689,26 @@ async function persistGeneralPost(post,bundledKey){
     location:post.loc||'SpaceMush Studio',
     category:'general',
     post_type:'general',
-    content:post,
+    content:storedPost,
     published:true,
+    published_at:post.publishedAt||new Date().toISOString(),
     created_by:user.id
   };
   if(post.supabaseId){
     delete row.slug;
     var updated=await supabaseClient.from('posts').update(row).eq('id',post.supabaseId);
     if(updated.error) throw updated.error;
-    await loadSupabaseContent();
     return;
   }
   if(bundledKey){
-    var existing=await supabaseClient.from('posts').select('id').eq('slug',row.slug).maybeSingle();
+    var existing=await supabaseClient.from('posts').select('id,published_at').eq('slug',row.slug).maybeSingle();
     if(existing.error) throw existing.error;
     if(existing.data){
+      row.published_at=existing.data.published_at||row.published_at;
       var override=await supabaseClient.from('posts').update(row).eq('id',existing.data.id);
       if(override.error) throw override.error;
-      await loadSupabaseContent();
+      post.supabaseId=existing.data.id;
+      post.runtimeKey='supabase-'+existing.data.id;
       return;
     }
   }
@@ -617,16 +717,99 @@ async function persistGeneralPost(post,bundledKey){
   post.supabaseId=created.data.id;
   post.runtimeKey='supabase-'+created.data.id;
   post.createdAt=created.data.created_at||new Date().toISOString();
-  await loadSupabaseContent();
+}
+async function persistDraftPost(draft){
+  if(!hasSupabase()||!adminLoggedIn) return;
+  var auth=await supabaseClient.auth.getUser();
+  if(auth.error) throw auth.error;
+  var user=auth.data&&auth.data.user;
+  if(!user) throw new Error('No signed-in administrator');
+  var data=draft.data||{};
+  var general=data.kind==='general';
+  var handle=general?(data.generalTitle||'SpaceMush Studio'):(data.handle||'SpaceMush Architects');
+  var title=general?handle:(data.title||handle);
+  var content=general?{
+    type:'carousel',handle:handle,author:{name:handle,avatar:'SM'},
+    loc:data.generalLabel||'SpaceMush Studio',
+    subtitle:data.generalSubtitle||data.generalLabel||'SpaceMush Studio',
+    caption:data.caption||'',images:data.images||[],
+    slides:(data.images||[]).map(function(src,index){return {type:'image',src:src,alt:handle+' image '+(index+1)};}),
+    feedInsertBefore:data.feedPosition||'top'
+  }:{
+    id:draft.remotePostId||draft.id,title:title,handle:handle,
+    loc:data.loc||'Chennai',location:data.loc||'Chennai',
+    mushNumber:data.projectNumber||'',showMushBadge:data.showMush!==false,
+    type:data.type||'Residential',tag:data.tag||'Residential',
+    category:tagToCategory(data.tag||'Residential'),
+    area:data.area||'—',budget:data.budget||'—',year:data.year||'',
+    timeline:data.timeline||'—',architect:data.architect||'',
+    client:data.client||'—',contractor:data.contractor||'—',
+    desc:data.desc||'',caption:data.caption||'',
+    images:data.images||[],feedInsertBefore:data.feedPosition||'top',
+    hasStory:!!data.story
+  };
+  content=await uploadPostContentImages(content,'draft-'+draft.id,user.id);
+  if(Array.isArray(content.images)) draft.data.images=content.images.slice();
+  var row={
+    title:title||'Untitled draft',handle:handle,subtitle:general?(data.generalSubtitle||'SpaceMush Studio'):(data.loc||'Chennai'),
+    caption:data.caption||'',location:general?(data.generalLabel||'SpaceMush Studio'):(data.loc||'Chennai'),
+    category:general?'general':(data.tag||'residential'),
+    post_type:general?'general':'project',content:content,
+    published:false,is_archived:false,is_deleted:false,updated_at:new Date().toISOString()
+  };
+  row.published_at=null;
+  if(draft.remotePostId){
+    var updated=await supabaseClient.from('posts').update(row).eq('id',draft.remotePostId).select('id').single();
+    if(updated.error) throw updated.error;
+    return draft.remotePostId;
+  }
+  row.slug='draft-'+String(draft.id).replace(/[^a-zA-Z0-9-]/g,'-');
+  var existing=await supabaseClient.from('posts').select('id').eq('slug',row.slug).maybeSingle();
+  if(existing.error) throw existing.error;
+  if(existing.data){
+    var resumed=await supabaseClient.from('posts').update(row).eq('id',existing.data.id).select('id').single();
+    if(resumed.error) throw resumed.error;
+    return resumed.data.id;
+  }
+  row.created_by=user.id;
+  var created=await supabaseClient.from('posts').insert(row).select('id').single();
+  if(created.error) throw created.error;
+  return created.data.id;
+}
+function draftFormDataFromRemote(post){
+  var source=post||{};
+  var general=source.postType==='general';
+  var content=source.content||{};
+  var images=Array.isArray(source.images)?source.images:(Array.isArray(content.images)?content.images:[]);
+  if(general) return {
+    kind:'general',generalTitle:source.handle||source.title||'',
+    generalLabel:source.loc||source.location||'SpaceMush Studio',
+    generalSubtitle:source.subtitle||'',caption:source.caption||'',
+    feedPosition:source.feedInsertBefore||'top',images:images
+  };
+  return {
+    kind:'project',title:source.title||'',handle:source.handle||'',
+    loc:source.loc||source.location||'',projectNumber:source.mushNumber||'',
+    showMush:source.showMushBadge!==false,type:source.type||'',
+    tag:source.tag||source.category||'Residential',area:source.area||'',
+    budget:source.budget||'',year:source.year||'',timeline:source.timeline||'',
+    architect:source.architect||'',client:source.client||'',contractor:source.contractor||'',
+    desc:source.desc||source.description||'',caption:source.caption||'',
+    feedPosition:source.feedInsertBefore||'top',story:!!source.hasStory,images:images
+  };
 }
 async function persistBundledPostDeletion(postKey){
+  return persistBundledPostState(postKey,true,false,archivedPostKeys.has(postKey));
+}
+async function persistBundledPostState(postKey,isDeleted,isPermanentlyDeleted,isArchived){
   if(!hasSupabase()||!adminLoggedIn) throw new Error('A signed-in administrator and Supabase connection are required to delete posts.');
   var auth=await supabaseClient.auth.getUser();
   if(auth.error) throw auth.error;
   var user=auth.data&&auth.data.user;
   if(!user) throw new Error('No signed-in administrator');
   var result=await supabaseClient.from('bundled_post_state').upsert({
-    post_key:postKey,is_deleted:true,updated_by:user.id,updated_at:new Date().toISOString()
+    post_key:postKey,is_deleted:isDeleted,is_archived:!!isArchived,is_permanently_deleted:!!isPermanentlyDeleted,
+    updated_by:user.id,updated_at:new Date().toISOString()
   });
   if(result.error) throw result.error;
 }
@@ -746,7 +929,7 @@ function init(){
   try { updateNavForStudio(); } catch(e) { console.error('Nav init error:', e); }
   try { updateFollowerDisplay(); } catch(e) { console.error('Follower init error:', e); }
   try { updateUserUI(); } catch(e) { console.error('User UI init error:', e); }
-  restoreSupabaseAdminSession();
+  adminSessionRestorePromise=restoreSupabaseAdminSession();
   loadSupabaseContent();
   // Normal hide after a short, intentional splash. A separate failsafe script
   // below also removes it if any unexpected runtime issue occurs.
@@ -815,11 +998,26 @@ function updateUserUI(){
   if(sbUserLogout) sbUserLogout.style.display = (loggedInUser&&!studioLoggedIn) ? 'block' : 'none';
 }
 
-function studioLogout(){
+async function studioLogout(){
+  await adminLogout();
+}
+
+async function adminLogout(){
+  if(hasSupabase()){
+    var result=await supabaseClient.auth.signOut();
+    if(result.error){
+      console.error('Admin sign-out failed:',result.error);
+      toast('Could not sign out: '+(result.error.message||'check your connection and try again.'));
+      return;
+    }
+  }
   studioLoggedIn=false;
+  adminLoggedIn=false;
+  currentAdminEmail='';
+  closeAdminPanel();
   updateNavForStudio();
   renderFeed(); // re-render to remove edit/delete menus
-  toast('👋 Logged out of Studio mode');
+  toast('👋 Signed out of the admin session');
 }
 
 function userLogout(){
@@ -866,11 +1064,13 @@ function renderStories(){
   </div>`;
   // Per-Mush stories
   mushData.forEach((m,i)=>{
+    if(!isProjectVisible(m)) return;
     const grad=m.storySeen?'linear-gradient(135deg,#d0d0d0,#a8a8a8)':ringGradients[i%ringGradients.length];
     const label=escapeHTML(projectDisplayName(m));
+    const avatarImage=m.images&&m.images.length?m.images[0]:'';
     html+=`<div class="story-item" onclick="viewStory(${i})">
       <div class="story-ring" style="background:${grad}">
-        <div class="story-avatar">${m.emoji}</div>
+        <div class="story-avatar">${m.emoji?'<span class="story-avatar-fallback">'+escapeHTML(m.emoji)+'</span>':''}${avatarImage?'<img class="story-avatar-image" src="'+escapeHTML(avatarImage)+'" alt="" loading="lazy" onerror="this.hidden=true">':''}</div>
       </div>
       <div class="story-name">${label}</div>
     </div>`;
@@ -891,6 +1091,7 @@ function buildStoryQueue(){
   }];
 
   mushData.forEach((m,i)=>{
+    if(!isProjectVisible(m)) return;
     const image = m.images && m.images.length ? m.images[0] : null;
     queue.push({
       id:'mush-'+i,
@@ -1087,9 +1288,34 @@ function renderFeed(){
   c.innerHTML=parts.join('');
   c.dataset.rendered='true';
   populateFeedPositionOptions();
+  monitorMediaAvailability(c);
   try{initTouchCarousels();}catch(e){console.error('Carousel init error:',e);}
   try{setupScrollReveal();}catch(e){document.querySelectorAll('.sr').forEach(x=>x.classList.add('in'));}
   return parts.length>0;
+}
+
+function monitorMediaAvailability(root){
+  if(!root) return;
+  root.querySelectorAll('img').forEach(function(image){
+    if(image.dataset.availabilityChecked) return;
+    image.dataset.availabilityChecked='true';
+    var markUnavailable=function(){
+      image.style.visibility='hidden';
+      var container=image.closest('.info-slide-media,.upload-preview-thumb,.admin-post-img')||image.parentElement;
+      if(container) container.classList.add('media-unavailable');
+    };
+    image.addEventListener('error',markUnavailable,{once:true});
+    if(image.complete&&image.naturalWidth===0) markUnavailable();
+  });
+  root.querySelectorAll('.post-img-photo').forEach(function(photo){
+    if(photo.dataset.availabilityChecked) return;
+    photo.dataset.availabilityChecked='true';
+    var background=(photo.style.backgroundImage||'').match(/^url\(["']?(.*?)["']?\)$/);
+    if(!background||!background[1]) return;
+    var image=new Image();
+    image.onerror=function(){photo.classList.add('media-unavailable');};
+    image.src=background[1];
+  });
 }
 
 function buildUniversalPostCard(post,key,position){
@@ -1218,21 +1444,25 @@ function initTouchCarousels(){
   document.querySelectorAll('.img-carousel, .info-carousel-wrap').forEach(elm=>{
     if(elm.dataset.touchReady==='1') return;
     elm.dataset.touchReady='1';
-    let startX=0,startY=0,dx=0,dragging=false;
+    let startX=0,startY=0,dx=0,dragging=false,horizontalGesture=false;
     elm.addEventListener('touchstart',e=>{
       if(!e.touches||!e.touches[0]) return;
-      startX=e.touches[0].clientX; startY=e.touches[0].clientY; dx=0; dragging=true;
+      startX=e.touches[0].clientX; startY=e.touches[0].clientY;
+      dx=0; dragging=true; horizontalGesture=false;
     },{passive:true});
     elm.addEventListener('touchmove',e=>{
       if(!dragging||!e.touches||!e.touches[0]) return;
       dx=e.touches[0].clientX-startX;
       const dy=e.touches[0].clientY-startY;
-      if(Math.abs(dx)>Math.abs(dy) && Math.abs(dx)>8) e.preventDefault();
+      if(!horizontalGesture&&Math.max(Math.abs(dx),Math.abs(dy))>8){
+        horizontalGesture=Math.abs(dx)>Math.abs(dy);
+      }
+      if(horizontalGesture) e.preventDefault();
     },{passive:false});
     elm.addEventListener('touchend',e=>{
       if(!dragging) return;
       dragging=false;
-      if(Math.abs(dx)<45) return;
+      if(!horizontalGesture||Math.abs(dx)<Math.max(48,elm.clientWidth*.16)) return;
       if(elm.classList.contains('img-carousel')){
         const id=elm.id||'';
         if(id.startsWith('cardImgWrap')){ const i=Number(id.replace('cardImgWrap','')); dx<0?cardNextImg(i):cardPrevImg(i); }
@@ -1273,25 +1503,47 @@ function buildCardCarousel(m,i){
       ${dots}
     </div>`;
 }
-function cardSetImg(i,newIdx){
+function animateCarouselSlide(element,direction){
+  if(!element) return;
+  element.classList.remove('carousel-slide-in-left','carousel-slide-in-right');
+  void element.offsetWidth;
+  element.classList.add(direction<0?'carousel-slide-in-right':'carousel-slide-in-left');
+}
+function cardSetImg(i,newIdx,direction){
   const m=mushData[i];
   if(!m||!m.images||!m.images.length) return;
   const len=m.images.length;
+  const previous=cardImgIdx[i]||0;
   const wrapped=((newIdx%len)+len)%len;
   cardImgIdx[i]=wrapped;
   const photoEl=document.getElementById('cardImg'+i);
-  if(photoEl) photoEl.style.backgroundImage=`url('${m.images[wrapped]}')`;
+  if(photoEl){
+    photoEl.style.backgroundImage=`url('${m.images[wrapped]}')`;
+    animateCarouselSlide(photoEl,direction===undefined?(wrapped>=previous?1:-1):direction);
+  }
   const counterEl=document.getElementById('cardCounter'+i);
   if(counterEl) counterEl.textContent=(wrapped+1)+'/'+len;
   const wrapEl=document.getElementById('cardImgWrap'+i);
+  if(photoEl){photoEl.dataset.availabilityChecked='';photoEl.classList.remove('media-unavailable');}
+  if(wrapEl) monitorMediaAvailability(wrapEl);
   if(wrapEl) wrapEl.querySelectorAll('.carousel-dot').forEach((d,di)=>d.classList.toggle('active',di===wrapped));
 }
-function cardNextImg(i){ cardSetImg(i,(cardImgIdx[i]||0)+1); }
-function cardPrevImg(i){ cardSetImg(i,(cardImgIdx[i]||0)-1); }
+function cardNextImg(i){ cardSetImg(i,(cardImgIdx[i]||0)+1,1); }
+function cardPrevImg(i){ cardSetImg(i,(cardImgIdx[i]||0)-1,-1); }
 function cardGotoImg(i,idx){ cardSetImg(i,idx); }
 
 function projectDisplayName(m){
   return (m && m.title) || (m && m.handle ? m.handle.replace(/^Mush_\d+_/i,'').replace(/([a-z])([A-Z])/g,'$1 $2') : 'SpaceMush Project');
+}
+function bundledProjectKey(project){
+  if(project&&project.supabaseId&&!project.bundledOverrideId) return undefined;
+  return Object.keys(POSTS||{}).find(function(key){
+    return POSTS[key].type==='project'&&POSTS[key].project&&String(POSTS[key].project.id)===String(project&&project.id);
+  });
+}
+function isProjectVisible(project){
+  var key=bundledProjectKey(project);
+  return !key||(!deletedPostKeys.has(key)&&!archivedPostKeys.has(key));
 }
 function escapeHTML(value){
   return String(value===undefined||value===null?'':value)
@@ -1405,21 +1657,27 @@ function buildProjectCardCarousel(m,i){
       ${dots}
     </div>`;
 }
-function projCardSetImg(i,newIdx){
+function projCardSetImg(i,newIdx,direction){
   const m=mushData[i];
   if(!m||!m.images||!m.images.length) return;
   const len=m.images.length;
+  const previous=projCardImgIdx[i]||0;
   const wrapped=((newIdx%len)+len)%len;
   projCardImgIdx[i]=wrapped;
   const photoEl=document.getElementById('pcImg'+i);
-  if(photoEl) photoEl.style.backgroundImage=`url('${m.images[wrapped]}')`;
+  if(photoEl){
+    photoEl.style.backgroundImage=`url('${m.images[wrapped]}')`;
+    animateCarouselSlide(photoEl,direction===undefined?(wrapped>=previous?1:-1):direction);
+  }
   const counterEl=document.getElementById('pcCounter'+i);
   if(counterEl) counterEl.textContent=(wrapped+1)+'/'+len;
   const wrapEl=document.getElementById('pcImgWrap'+i);
+  if(photoEl){photoEl.dataset.availabilityChecked='';photoEl.classList.remove('media-unavailable');}
+  if(wrapEl) monitorMediaAvailability(wrapEl);
   if(wrapEl) wrapEl.querySelectorAll('.carousel-dot').forEach((d,di)=>d.classList.toggle('active',di===wrapped));
 }
-function projCardNextImg(i){ projCardSetImg(i,(projCardImgIdx[i]||0)+1); }
-function projCardPrevImg(i){ projCardSetImg(i,(projCardImgIdx[i]||0)-1); }
+function projCardNextImg(i){ projCardSetImg(i,(projCardImgIdx[i]||0)+1,1); }
+function projCardPrevImg(i){ projCardSetImg(i,(projCardImgIdx[i]||0)-1,-1); }
 function projCardGotoImg(i,idx){ projCardSetImg(i,idx); }
 
 function buildProjectPostCard(m,i){
@@ -1455,16 +1713,19 @@ function buildProjectPostCard(m,i){
 function renderProjectsGrid(){
   const g=document.getElementById('projectsGrid');
   if(!g) return;
+  var visibleProjects=mushData.map(function(project,index){return {project:project,index:index};}).filter(function(entry){return isProjectVisible(entry.project);});
   const subEl=document.getElementById('projectsSubCount');
-  if(subEl) subEl.textContent=mushData.length+' completed project'+(mushData.length===1?'':'s')+' in Chennai';
-  g.innerHTML=mushData.map((m,i)=>buildProjectPostCard(m,i)).join('');
+  if(subEl) subEl.textContent=visibleProjects.length+' completed project'+(visibleProjects.length===1?'':'s')+' in Chennai';
+  g.innerHTML=visibleProjects.map(function(entry){return buildProjectPostCard(entry.project,entry.index);}).join('');
+  monitorMediaAvailability(g);
 }
 function filterProjects(cat,btn){
   document.querySelectorAll('#projectFilters .tag-pill').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
   document.querySelectorAll('#projectsGrid .mush-card').forEach((el,i)=>{
-    if(!mushData[i]){el.style.display='none';return;}
-    const mCat=mushData[i].category||'';
+    const project=mushData[Number(el.getAttribute('data-index'))];
+    if(!project||!isProjectVisible(project)){el.style.display='none';return;}
+    const mCat=project.category||'';
     let show=false;
     if(cat==='all') show=true;
     else if(cat==='residential') show=mCat.includes('residential');
@@ -1563,7 +1824,7 @@ function renderInfoCarousel(key){
       ${dots}
     </div>`;
 }
-function infoSetSlide(key,newIdx){
+function infoSetSlide(key,newIdx,direction){
   const post=infoPosts[key];
   if(!post) return;
   const len=post.slides.length;
@@ -1574,14 +1835,17 @@ function infoSetSlide(key,newIdx){
   const prevFrame=document.getElementById('infoFrame_'+key+'_'+prevIdx);
   if(prevFrame) prevFrame.style.display='none';
   const nextFrame=document.getElementById('infoFrame_'+key+'_'+wrapped);
-  if(nextFrame) nextFrame.style.display='flex';
+  if(nextFrame){
+    nextFrame.style.display='flex';
+    animateCarouselSlide(nextFrame,direction===undefined?(wrapped>=prevIdx?1:-1):direction);
+  }
   const counterEl=document.getElementById('infoCounter_'+key);
   if(counterEl) counterEl.textContent=(wrapped+1)+'/'+len;
   const wrapEl=document.getElementById('infoWrap_'+key);
   if(wrapEl) wrapEl.querySelectorAll('.carousel-dot').forEach((d,di)=>d.classList.toggle('active',di===wrapped));
 }
-function infoNextSlide(key){ infoSetSlide(key,(infoPosts[key].idx||0)+1); }
-function infoPrevSlide(key){ infoSetSlide(key,(infoPosts[key].idx||0)-1); }
+function infoNextSlide(key){ infoSetSlide(key,(infoPosts[key].idx||0)+1,1); }
+function infoPrevSlide(key){ infoSetSlide(key,(infoPosts[key].idx||0)-1,-1); }
 function infoGotoSlide(key,idx){ infoSetSlide(key,idx); }
 
 function buildInfoPostCard(key,opts){
@@ -1936,6 +2200,8 @@ function openCreatePost(editIndex){
   const isDraftEdit=currentEditingDraftId!==null;
   var kind=el('cp-post-kind');
   if(kind) kind.value=isGeneralEdit?'general':'project';
+  var editingDraft=currentEditingDraftId&&postDrafts.find(function(draft){return draft.id===currentEditingDraftId;});
+  currentEditingDraftRemoteId=editingDraft&&editingDraft.remotePostId||null;
   populateFeedPositionOptions();
   document.getElementById('createPostTitle').textContent=isDraftEdit?'✏️ Edit Draft':(isEdit?'✏️ Edit Mush Post':'✦ New Mush Post');
   // Reset emoji picker
@@ -1976,6 +2242,8 @@ function openCreatePost(editIndex){
     document.getElementById('cp-client').value=m.client||'';
     document.getElementById('cp-contractor').value=m.contractor||'';
     if(el('cp-feed-position')) el('cp-feed-position').value=m.feedInsertBefore||'top';
+    document.getElementById('cp-story-toggle').checked=!!m.hasStory;
+    document.getElementById('cp-story-note').style.display=m.hasStory?'block':'none';
     document.getElementById('cp-caption').value=m.caption;
     document.getElementById('cp-desc').value=m.desc;
     // Set emoji preview
@@ -2052,6 +2320,27 @@ function openDraftPost(id){
   openCreatePost();
 }
 
+async function openRemoteDraftPost(id){
+  var post=remoteDraftPosts.find(function(draft){return draft.supabaseId===id;});
+  if(!post) return;
+  try{
+    await loadPostDrafts();
+    var localId='remote-'+id;
+    var draft={
+      id:localId,remotePostId:id,kind:post.postType==='general'?'general':'project',
+      title:post.title||post.handle||'Untitled draft',
+      updatedAt:post.updatedAt||post.createdAt||new Date().toISOString(),
+      createdAt:post.createdAt||new Date().toISOString(),
+      data:draftFormDataFromRemote(post)
+    };
+    await storePostDraft(draft);
+    openDraftPost(localId);
+  }catch(error){
+    console.error('Could not open remote draft:',error);
+    toast('Could not open draft: '+(error.message||'draft storage is unavailable.'));
+  }
+}
+
 function populateFeedPositionOptions(){
   var select=el('cp-feed-position');
   if(!select) return;
@@ -2060,9 +2349,12 @@ function populateFeedPositionOptions(){
   var anchors=[];
   var seen=new Set();
   var renderedKeys=new Set();
+  var renderedOrder=[];
   var feed=el('feedContainer');
   if(feed) feed.querySelectorAll('[data-post-id]').forEach(function(card){
-    renderedKeys.add(card.getAttribute('data-post-id'));
+    var key=card.getAttribute('data-post-id');
+    renderedKeys.add(key);
+    renderedOrder.push(key);
   });
   var useRenderedFeed=!!(feed&&feed.dataset.rendered==='true');
   function isVisibleFeedPost(key){
@@ -2088,6 +2380,16 @@ function populateFeedPositionOptions(){
       : post.title||post.handle||post.author&&post.author.name||post.subtitle||key;
     anchors.push({key:key,label:label});
   });
+  if(useRenderedFeed){
+    var feedOrder=new Map();
+    renderedOrder.forEach(function(key,index){
+      if(!feedOrder.has(key)) feedOrder.set(key,index);
+    });
+    anchors.sort(function(a,b){
+      return (feedOrder.has(a.key)?feedOrder.get(a.key):Number.MAX_SAFE_INTEGER)-
+        (feedOrder.has(b.key)?feedOrder.get(b.key):Number.MAX_SAFE_INTEGER);
+    });
+  }
   anchors.forEach(function(anchor){
     options+='<option value="'+escapeHTML(anchor.key)+'">Before: '+escapeHTML(anchor.label)+'</option>';
   });
@@ -2097,22 +2399,140 @@ function populateFeedPositionOptions(){
 
 const emojiOptions=['🏠','🍳','🛏️','🪴','🏢','✨','💼','🏗️','🌿','🛁','🏡','🎨'];
 let emojiPickIdx=0;
+function postImageBlob(source){
+  if(source instanceof Blob) return Promise.resolve(source);
+  return fetch(source).then(function(response){
+    if(!response.ok) throw new Error('Could not read selected image.');
+    return response.blob();
+  });
+}
+async function compressPostImage(source){
+  var input=await postImageBlob(source);
+  if(input.type==='image/webp'&&input.size<=650*1024) return input;
+  var bitmap;
+  try{
+    if(typeof window.createImageBitmap==='function') bitmap=await window.createImageBitmap(input);
+    else{
+      bitmap=await new Promise(function(resolve,reject){
+        var objectUrl=URL.createObjectURL(input);
+        var image=new Image();
+        image.onload=function(){
+          image.close=function(){URL.revokeObjectURL(objectUrl);};
+          resolve(image);
+        };
+        image.onerror=function(){
+          URL.revokeObjectURL(objectUrl);
+          reject(new Error('Image decoding failed'));
+        };
+        image.src=objectUrl;
+      });
+    }
+  }catch(error){
+    throw new Error('An image could not be decoded. Please choose a JPG, PNG, or WebP image.');
+  }
+  try{
+    var scale=Math.min(1,1920/Math.max(bitmap.width,bitmap.height));
+    var canvas=document.createElement('canvas');
+    canvas.width=Math.max(1,Math.round(bitmap.width*scale));
+    canvas.height=Math.max(1,Math.round(bitmap.height*scale));
+    var context=canvas.getContext('2d');
+    if(!context) throw new Error('Image compression is unavailable in this browser.');
+    context.drawImage(bitmap,0,0,canvas.width,canvas.height);
+    var qualities=[0.82,0.72,0.62,0.52];
+    var output=null;
+    for(var i=0;i<qualities.length;i++){
+      output=await new Promise(function(resolve){
+        canvas.toBlob(resolve,'image/webp',qualities[i]);
+      });
+      if(!output) throw new Error('Could not compress an image. Please try another file.');
+      if(output.type!=='image/webp'){
+        output=await new Promise(function(resolve){
+          canvas.toBlob(resolve,'image/jpeg',qualities[i]);
+        });
+      }
+      if(output.size<=650*1024||i===qualities.length-1) break;
+    }
+    return output;
+  }finally{
+    bitmap.close();
+  }
+}
+function postImageDataUrl(blob){
+  return new Promise(function(resolve,reject){
+    var reader=new FileReader();
+    reader.onload=function(){resolve(reader.result);};
+    reader.onerror=function(){reject(reader.error||new Error('Could not prepare image preview.'));};
+    reader.readAsDataURL(blob);
+  });
+}
+function postImageObjectKey(){
+  return window.crypto&&window.crypto.randomUUID
+    ?window.crypto.randomUUID()
+    :'image-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
+}
+async function compressPostImageList(sources){
+  var images=[];
+  for(var i=0;i<sources.length;i++){
+    var source=sources[i];
+    images.push(typeof source==='string'&&source.indexOf('data:image/')===0
+      ?await postImageDataUrl(await compressPostImage(source))
+      :source);
+  }
+  return images;
+}
+async function optimizeSelectedPostImages(){
+  selectedPostImages=await compressPostImageList(selectedPostImages);
+  renderPostImagePreviews();
+}
+async function uploadPostContentImages(content,ownerKey,userId){
+  var uploaded=new Map();
+  async function uploadSource(source){
+    if(typeof source!=='string'||source.indexOf('data:image/')!==0) return source;
+    if(uploaded.has(source)) return uploaded.get(source);
+    var task=(async function(){
+      var blob=await compressPostImage(source);
+      var extension=blob.type==='image/webp'?'webp':(blob.type==='image/png'?'png':'jpg');
+      var path=userId+'/'+String(ownerKey).replace(/[^a-zA-Z0-9_-]/g,'-')+'/'+postImageObjectKey()+'.'+extension;
+      var result=await supabaseClient.storage.from(POST_MEDIA_BUCKET).upload(path,blob,{
+        cacheControl:'31536000',
+        contentType:blob.type,
+        upsert:false
+      });
+      if(result.error) throw result.error;
+      return supabaseClient.storage.from(POST_MEDIA_BUCKET).getPublicUrl(path).data.publicUrl;
+    })();
+    uploaded.set(source,task);
+    return task;
+  }
+  var stored=Object.assign({},content);
+  if(Array.isArray(content.images)) stored.images=await Promise.all(content.images.map(uploadSource));
+  if(Array.isArray(content.slides)){
+    stored.slides=await Promise.all(content.slides.map(async function(slide){
+      if(!slide||slide.type!=='image'||!slide.src) return slide;
+      return Object.assign({},slide,{src:await uploadSource(slide.src)});
+    }));
+  }
+  return stored;
+}
 function handlePostImages(event){
   var files=Array.from(event.target.files||[]).slice(0,10);
   var invalid=files.find(function(file){return file.size>20*1024*1024;});
   if(invalid){ toast('Each image must be under 20MB'); event.target.value=''; return; }
   if(!files.length) return;
-  Promise.all(files.map(function(file){
-    return new Promise(function(resolve,reject){
-      var reader=new FileReader();
-      reader.onload=function(){resolve(reader.result);};
-      reader.onerror=reject;
-      reader.readAsDataURL(file);
-    });
-  })).then(function(images){
+  var zoneText=el('uploadZoneText');
+  if(zoneText) zoneText.textContent='Optimizing images…';
+  (async function(){
+    var images=[];
+    for(var i=0;i<files.length;i++) images.push(postImageDataUrl(await compressPostImage(files[i])));
+    return Promise.all(images);
+  })().then(function(images){
     selectedPostImages=images;
     renderPostImagePreviews();
-  }).catch(function(){toast('Could not read one of those images');});
+  }).catch(function(error){
+    renderPostImagePreviews();
+    console.error('Post image optimization failed:',error);
+    toast(error.message||'Could not prepare one of those images.');
+  }).finally(function(){event.target.value='';});
 }
 function renderPostImagePreviews(){
   var grid=el('uploadPreviewGrid');
@@ -2131,6 +2551,7 @@ function renderPostImagePreviews(){
       '</div>'+
     '</div>';
   }).join('');
+  monitorMediaAvailability(grid);
   if(icon) icon.style.display=selectedPostImages.length?'none':'block';
   if(emoji) emoji.style.display=selectedPostImages.length?'none':'block';
   if(text) text.textContent=selectedPostImages.length
@@ -2163,7 +2584,34 @@ function dropPostImage(event,targetIndex){
   renderPostImagePreviews();
 }
 
-async function saveDraft(){
+async function runPostSaveAction(action,callback){
+  if(postSavePending) return;
+  postSavePending=true;
+  var draftButton=document.querySelector('.create-modal-actions .btn-draft');
+  var publishButton=document.querySelector('.create-modal-actions .btn-publish');
+  var originalDraftText=draftButton&&draftButton.textContent;
+  var originalPublishText=publishButton&&publishButton.textContent;
+  [draftButton,publishButton].forEach(function(button){
+    if(button){button.disabled=true;button.setAttribute('aria-busy','true');}
+  });
+  if(action==='draft'&&draftButton) draftButton.textContent='Saving draft…';
+  if(action==='publish'&&publishButton) publishButton.textContent='Publishing…';
+  try{
+    await callback();
+  }catch(error){
+    console.error('Post '+action+' failed unexpectedly:',error);
+    toast(supabaseSchemaErrorMessage(error)||('Could not '+action+' post: '+(error.message||'check your connection and try again.')));
+  }finally{
+    postSavePending=false;
+    if(draftButton){draftButton.disabled=false;draftButton.removeAttribute('aria-busy');draftButton.textContent=originalDraftText;}
+    if(publishButton){publishButton.disabled=false;publishButton.removeAttribute('aria-busy');publishButton.textContent=originalPublishText;}
+  }
+}
+function saveDraft(){
+  return runPostSaveAction('draft',saveDraftInternal);
+}
+async function saveDraftInternal(){
+  await optimizeSelectedPostImages();
   var kind=(el('cp-post-kind')||{}).value||'project';
   var data={
     kind:kind,
@@ -2197,6 +2645,7 @@ async function saveDraft(){
     var title=kind==='general'?data.generalTitle:data.title;
     var draft={
       id:currentEditingDraftId||(window.crypto&&window.crypto.randomUUID?window.crypto.randomUUID():'draft-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)),
+      remotePostId:existing&&existing.remotePostId||currentEditingDraftRemoteId||null,
       kind:kind,
       title:title.trim()||data.handle.trim()||'Untitled draft',
       updatedAt:now,
@@ -2204,7 +2653,20 @@ async function saveDraft(){
       data:data
     };
     await storePostDraft(draft);
+    if(hasSupabase()&&adminLoggedIn){
+      try{
+        draft.remotePostId=await persistDraftPost(draft);
+        await storePostDraft(draft);
+        remoteDraftsLoaded=false;
+      }catch(error){
+        console.error('Cloud draft save failed:',error);
+        renderAdminPosts();
+        toast('Draft saved in this browser, but cloud save failed: '+(supabaseSchemaErrorMessage(error)||error.message||'check your connection and admin access.'));
+        return;
+      }
+    }
     currentEditingDraftId=null;
+    currentEditingDraftRemoteId=null;
     closeCreatePost();
     renderAdminPosts();
     toast('Draft saved. Find it in Manage posts → Drafts.');
@@ -2217,14 +2679,53 @@ async function saveDraft(){
 async function deletePostDraft(id){
   var draft=postDrafts.find(function(item){return item.id===id;});
   if(!draft) return;
-  if(!confirm('Delete draft "'+draft.title+'"? This cannot be undone.')) return;
+  if(!confirm('Move draft "'+draft.title+'" to Deleted Posts? You can restore it later.')) return;
   try{
-    await removePostDraft(id);
+    if(draft.remotePostId&&!await runPostLifecycle(draft.remotePostId,'delete')) return;
+    draft.isDeleted=true;
+    draft.deletedAt=new Date().toISOString();
+    await storePostDraft(draft);
     renderAdminPosts();
-    toast('Draft deleted.');
+    toast('Draft moved to Deleted Posts.');
   }catch(error){
     console.error('Draft deletion failed:',error);
     toast('Could not delete draft: '+(error.message||'local draft storage is unavailable.'));
+  }
+}
+
+async function deleteRemoteDraft(id){
+  var draft=remoteDraftPosts.find(function(item){return item.supabaseId===id;});
+  if(!draft||!confirm('Move this draft to Deleted Posts?')) return;
+  if(await runPostLifecycle(id,'delete')) toast('Draft moved to Deleted Posts.');
+}
+
+async function restoreLocalDeletedDraft(id){
+  var draft=postDrafts.find(function(item){return item.id===id&&item.isDeleted;});
+  if(!draft) return;
+  if(draft.remotePostId&&!await runPostLifecycle(draft.remotePostId,'restore')) return;
+  try{
+    draft.isDeleted=false;
+    delete draft.deletedAt;
+    await storePostDraft(draft);
+    renderAdminPosts();
+    toast('↥ Draft restored');
+  }catch(error){
+    console.error('Local draft restore failed:',error);
+    toast('The server draft was restored, but this browser copy could not be updated.');
+  }
+}
+
+async function permanentlyDeleteLocalDraft(id){
+  var draft=postDrafts.find(function(item){return item.id===id&&item.isDeleted;});
+  if(!draft||!confirm('Permanently delete this draft? This cannot be undone.')) return;
+  if(draft.remotePostId&&!await runPostLifecycle(draft.remotePostId,'permanent_delete')) return;
+  try{
+    await removePostDraft(id);
+    renderAdminPosts();
+    toast('Draft permanently deleted.');
+  }catch(error){
+    console.error('Permanent local draft deletion failed:',error);
+    toast('The server post was permanently deleted, but the browser copy could not be removed.');
   }
 }
 
@@ -2234,15 +2735,24 @@ async function removeCurrentDraftAfterPublish(){
   try{
     await removePostDraft(id);
     currentEditingDraftId=null;
+    currentEditingDraftRemoteId=null;
+    if(hasSupabase()&&adminLoggedIn){
+      remoteDraftsLoaded=false;
+    }
     return '';
   }catch(error){
     console.error('Published post, but draft cleanup failed:',error);
     currentEditingDraftId=null;
+    currentEditingDraftRemoteId=null;
     return ' The saved draft copy remains in Manage posts → Drafts.';
   }
 }
 
-async function publishMush(){
+function publishMush(){
+  return runPostSaveAction('publish',publishMushInternal);
+}
+async function publishMushInternal(){
+  await optimizeSelectedPostImages();
   const postKind=(document.getElementById('cp-post-kind')||{}).value||'project';
   let handle=document.getElementById('cp-handle').value.trim();
   if(postKind==='general'){
@@ -2250,7 +2760,7 @@ async function publishMush(){
     var existingGeneralSource=editingGeneral
       ? ((typeof POSTS!=='undefined'&&POSTS[currentEditGeneralKey])||generalPosts.find(function(post){return post.key===currentEditGeneralKey;}))
       : null;
-    if(!selectedPostImages.length&&!editingGeneral){toast('⚠️ Select at least one carousel image');return;}
+    if(!selectedPostImages.length&&!editingGeneral&&!currentEditingDraftId){toast('⚠️ Select at least one carousel image');return;}
     var generalTitle=(el('cp-general-title')||{}).value.trim()||handle;
     if(!generalTitle){toast('⚠️ Enter a topic or title for this post');return;}
     var generalLabel=(el('cp-general-label')||{}).value.trim()||'SpaceMush Studio';
@@ -2323,6 +2833,7 @@ async function publishMush(){
     }
     var generalKey=registerGeneralPost(general);
     var newGeneral=generalPosts.find(function(post){return post.key===generalKey;});
+    if(currentEditingDraftRemoteId) newGeneral.supabaseId=currentEditingDraftRemoteId;
     try{ await persistGeneralPost(newGeneral); }
     catch(error){
       console.error('Carousel publish failed:',error);
@@ -2379,6 +2890,7 @@ async function publishMush(){
     palette:['#c4805a','#f5e6d3','#3a2a1a'],
     gallery:['🏠','✨','💡','🌿','🛋️','🪟'],
     images:selectedPostImages.slice(),
+    supabaseId:currentEditingDraftRemoteId||undefined,
     testimonial:'"Another exceptional SpaceMush project."',
     times:'just now',
   };
@@ -2436,11 +2948,11 @@ function tagToCategory(tag){
 
 async function deleteMush(i,confirmed){
   if(!mushData[i]) return;
-  if(!confirmed&&!confirm(`Delete ${mushData[i].handle}? This cannot be undone.`)) return;
+  if(!confirmed&&!confirm(`Move ${mushData[i].handle} to Deleted Posts? You can restore it later.`)) return;
   var removed=mushData[i];
   if(removed.supabaseId){
     var deleted=await runPostLifecycle(removed.supabaseId,'delete');
-    if(deleted) toast('🗑️ Mush post and its story deleted');
+    if(deleted) toast('🗑️ Mush post moved to Deleted Posts');
     return;
   }
   var bundledKey=Object.keys(POSTS||{}).find(function(key){
@@ -2449,16 +2961,17 @@ async function deleteMush(i,confirmed){
   if(removed.bundledOverrideId){
     if(!await runPostLifecycle(removed.bundledOverrideId,'delete')) return;
   }
-  if(bundledKey&&!deletedPostKeys.has(bundledKey)){
+  if(bundledKey&&!removed.bundledOverrideId&&!deletedPostKeys.has(bundledKey)){
     try{ await persistBundledPostDeletion(bundledKey); }
     catch(error){
       console.error('Bundled post deletion failed:',error);
-      toast('Could not delete this post. Nothing was changed.');
+      toast(supabaseSchemaErrorMessage(error)||'Could not delete this post. Nothing was changed.');
       return;
     }
     deletedPostKeys.add(bundledKey);
   }
-  mushData.splice(i,1);
+  var removedIndex=mushData.indexOf(removed);
+  if(removedIndex>=0) mushData.splice(removedIndex,1);
   runtimeProjectPosts=runtimeProjectPosts.filter(function(post){return !post.project||String(post.project.id)!==String(removed.id);});
   renderFeed();
   renderStories();
@@ -2474,6 +2987,7 @@ function closeCreatePost(e){
     document.body.style.overflow='';
     currentEditGeneralKey=null;
     currentEditingDraftId=null;
+    currentEditingDraftRemoteId=null;
   }
 }
 
@@ -2484,7 +2998,7 @@ function openStoryCreate(linkedMushIdx){
   if(!studioLoggedIn){toast('🔐 Studio login required');return;}
   // Populate mush picker
   const picker=document.getElementById('st-mush-select');
-  picker.innerHTML=mushData.map((m,i)=>`<option value="${i}">${m.handle}</option>`).join('');
+  picker.innerHTML=mushData.map((m,i)=>isProjectVisible(m)?`<option value="${i}">${m.handle}</option>`:'').join('');
   if(linkedMushIdx!==undefined) picker.value=linkedMushIdx;
   addClass('storyCreateOverlay','open');
   document.body.style.overflow='hidden';
@@ -2570,6 +3084,8 @@ function modalSetImg(newIdx){
   modalImgIdx=((newIdx%len)+len)%len;
   const photoEl=document.getElementById('pmlPhoto');
   if(photoEl) photoEl.style.backgroundImage=`url('${m.images[modalImgIdx]}')`;
+  if(photoEl){photoEl.dataset.availabilityChecked='';photoEl.classList.remove('media-unavailable');}
+  if(photoEl) monitorMediaAvailability(photoEl.parentElement||photoEl);
   const counterEl=document.getElementById('pmlCounter');
   if(counterEl) counterEl.textContent=(modalImgIdx+1)+'/'+len;
   document.querySelectorAll('#pmrGallery .modal-gallery-item').forEach((t,ti)=>t.classList.toggle('active-thumb',ti===modalImgIdx));
@@ -2658,6 +3174,7 @@ function openProject(i){
   var editBtn=el('pmrEditBtn');
   if(editBtn) editBtn.style.display=studioLoggedIn?'inline-flex':'none';
   addClass('projectOverlay','open');
+  monitorMediaAvailability(el('projectOverlay'));
   document.body.style.overflow='hidden';
 }
 function editCurrentPost(){
@@ -2683,6 +3200,16 @@ function closeStudioLogin(e){
   return;
 }
 function openAdminLogin(){
+  if(adminSessionRestorePromise&&!studioLoggedIn){
+    adminSessionRestorePromise.then(function(){
+      if(studioLoggedIn){openAdminPanel();return;}
+      addClass('adminLoginOverlay','open');
+      document.body.style.overflow='hidden';
+      var restoredEmail=el('adminLoginEmail');
+      if(restoredEmail) restoredEmail.focus();
+    });
+    return;
+  }
   if(studioLoggedIn){ openAdminPanel(); return; }
   addClass('adminLoginOverlay','open');
   document.body.style.overflow='hidden';
@@ -2704,6 +3231,7 @@ async function restoreSupabaseAdminSession(){
         studioLoggedIn=false;
         adminLoggedIn=false;
         currentAdminEmail='';
+        remoteDraftsLoaded=false;
         closeAdminPanel();
         updateNavForStudio();
       }
@@ -2832,18 +3360,57 @@ function adminTab(name,btn){
 }
 
 // ─── DASHBOARD ────────────────────────────────────────────────
+function getActiveFeedPostCounts(){
+  var mixed=(typeof FEED_CONFIG!=='undefined'&&Array.isArray(FEED_CONFIG))?FEED_CONFIG:[];
+  var staticPosts=typeof POSTS!=='undefined'&&POSTS?POSTS:{};
+  var runtimePosts=runtimeProjectPosts.concat(generalPosts);
+  var staticAnchors=new Set();
+  mixed.forEach(function(item){
+    var key=typeof item==='string'?item:(item.key||item.id);
+    if(key&&staticPosts[key]&&!bundledProjectOverrides.has(key)&&!bundledGeneralOverrides.has(key)&&
+      !deletedPostKeys.has(key)&&!archivedPostKeys.has(key)) staticAnchors.add(key);
+  });
+  var runtimeAnchors=new Set(runtimePosts.filter(function(post){
+    var key=post.runtimeKey||post.key;
+    return key&&!archivedPostKeys.has(key)&&!(post.bundledKey&&deletedPostKeys.has(post.bundledKey));
+  }).map(function(post){return post.runtimeKey||post.key;}));
+  var seenRuntime=new Set();
+  var counts={projects:0,general:0};
+  function countRuntimePosts(position){
+    runtimePosts.forEach(function(post){
+      var key=post.runtimeKey||post.key;
+      if(!key||seenRuntime.has(key)||archivedPostKeys.has(key)||
+        (post.bundledKey&&deletedPostKeys.has(post.bundledKey))) return;
+      var feedPosition=post.feedInsertBefore||'top';
+      if(feedPosition!=='top'&&feedPosition!=='bottom'&&
+        !staticAnchors.has(feedPosition)&&!runtimeAnchors.has(feedPosition)) feedPosition='top';
+      if(feedPosition!==position) return;
+      seenRuntime.add(key);
+      if(post.type==='project') counts.projects++;
+      else counts.general++;
+      countRuntimePosts(key);
+    });
+  }
+  countRuntimePosts('top');
+  mixed.forEach(function(item){
+    var key=typeof item==='string'?item:(item.key||item.id);
+    countRuntimePosts(key);
+    var post=key&&staticPosts[key];
+    if(post&&!bundledProjectOverrides.has(key)&&!bundledGeneralOverrides.has(key)&&
+      !deletedPostKeys.has(key)&&!archivedPostKeys.has(key)){
+      if(post.type==='project') counts.projects++;
+      else counts.general++;
+    }
+  });
+  countRuntimePosts('bottom');
+  return counts;
+}
 function renderAdminDashboard(){
   var asg=el('adminStatsGrid');
   if(!asg) return;
-  var projectCount=mushData.filter(function(post){
-    var runtime=runtimeProjectPosts.find(function(item){return item.project&&String(item.project.id)===String(post.id);});
-    var key=runtime&&runtime.runtimeKey||Object.keys(POSTS||{}).find(function(candidate){return POSTS[candidate].type==='project'&&POSTS[candidate].project&&String(POSTS[candidate].project.id)===String(post.id);});
-    return !archivedPostKeys.has(key);
-  }).length;
-  var existingGeneralCount=(typeof POSTS!=='undefined'&&POSTS)
-    ? Object.keys(POSTS).filter(function(key){return POSTS[key].type!=='project'&&!deletedPostKeys.has(key)&&!archivedPostKeys.has(key);}).length
-    : 0;
-  var generalCount=existingGeneralCount+generalPosts.length;
+  var counts=getActiveFeedPostCounts();
+  var projectCount=counts.projects;
+  var generalCount=counts.general;
   var totalCount=projectCount+generalCount;
   asg.innerHTML=[
     {icon:'▦',num:totalCount,label:'Total posts live',ch:'All published content',ok:true},
@@ -3159,9 +3726,9 @@ function renderAdminPosts(){
   var search=((el('adminPostSearch')||{}).value||'').trim().toLowerCase();
   var filter=(el('adminPostFilter')||{}).value||'all';
   if(filter==='drafts'){
-    if(!postDraftsLoaded){
+    if(!postDraftsLoaded||(adminLoggedIn&&!remoteDraftsLoaded)){
       apg.innerHTML='<div class="admin-posts-empty"><strong>Loading drafts…</strong></div>';
-      loadPostDrafts().then(renderAdminPosts).catch(function(error){
+      Promise.all([loadPostDrafts(),loadSupabaseAdminDrafts()]).then(renderAdminPosts).catch(function(error){
         console.error('Draft loading failed:',error);
         apg.innerHTML='<div class="admin-posts-empty"><strong>Drafts could not be loaded</strong><span>'+
           escapeHTML(error.message||'Local draft storage is unavailable.')+'</span></div>';
@@ -3170,20 +3737,28 @@ function renderAdminPosts(){
     }
     var matchingDrafts=postDrafts.filter(function(draft){
       var searchable=[draft.title,draft.kind,draft.data&&draft.data.loc,draft.data&&draft.data.caption].join(' ').toLowerCase();
+      return !draft.isDeleted&&(!search||searchable.indexOf(search)!==-1);
+    });
+    var activeDrafts=postDrafts.filter(function(draft){return !draft.isDeleted;});
+    var localRemoteIds=new Set(activeDrafts.map(function(draft){return draft.remotePostId;}).filter(Boolean));
+    var matchingRemoteDrafts=remoteDraftPosts.filter(function(draft){
+      if(localRemoteIds.has(draft.supabaseId)) return false;
+      var searchable=[draft.title,draft.handle,draft.subtitle,draft.caption,draft.loc].join(' ').toLowerCase();
       return !search||searchable.indexOf(search)!==-1;
     });
+    var draftTotal=activeDrafts.length+remoteDraftPosts.filter(function(draft){return !localRemoteIds.has(draft.supabaseId);}).length;
     var countDrafts=el('adminPostCount');
-    if(countDrafts) countDrafts.textContent=matchingDrafts.length+' of '+postDrafts.length+' drafts';
+    if(countDrafts) countDrafts.textContent=(matchingDrafts.length+matchingRemoteDrafts.length)+' of '+draftTotal+' drafts';
     var draftFilter=el('adminPostFilter');
     if(draftFilter){
       var draftOption=draftFilter.querySelector('option[value="drafts"]');
-      if(draftOption) draftOption.textContent='Drafts ('+postDrafts.length+')';
+      if(draftOption) draftOption.textContent='Drafts ('+draftTotal+')';
     }
-    if(!matchingDrafts.length){
+    if(!matchingDrafts.length&&!matchingRemoteDrafts.length){
       apg.innerHTML='<div class="admin-posts-empty"><div class="admin-empty-mark">⌁</div><strong>No drafts found</strong><span>Save a post as a draft and it will appear here.</span></div>';
       return;
     }
-    apg.innerHTML=matchingDrafts.map(function(draft){
+    var localDraftCards=matchingDrafts.map(function(draft){
       var data=draft.data||{};
       var images=Array.isArray(data.images)?data.images:[];
       var title=escapeHTML(draft.title||'Untitled draft');
@@ -3198,11 +3773,83 @@ function renderAdminPosts(){
           '<div class="admin-post-metrics"><span>▧ '+images.length+' image'+(images.length===1?'':'s')+'</span><span>Saved '+new Date(draft.updatedAt||draft.createdAt||0).toLocaleDateString()+'</span></div>'+
         '</div>'+
         '<div class="admin-post-actions">'+
-          '<button class="admin-action-btn edit" onclick="openDraftPost(\''+draft.id+'\')">Continue editing <span>→</span></button>'+
+          '<button class="admin-action-btn edit" onclick="openDraftPost(\''+escapeHTML(draft.id)+'\')">Continue editing <span>→</span></button>'+
           '<button class="admin-icon-action delete" aria-label="Delete draft" title="Delete draft" onclick="deletePostDraft(\''+draft.id+'\')">⌫</button>'+
         '</div>'+
       '</article>';
     }).join('');
+    var remoteDraftCards=matchingRemoteDrafts.map(function(draft){
+      var images=draft.images||[];
+      var title=escapeHTML(draft.title||draft.handle||'Untitled draft');
+      var cover=images.length?'<img class="admin-post-cover" src="'+escapeHTML(images[0])+'" alt="Draft cover">':'<span>'+(draft.postType==='general'?'▧':'🏠')+'</span>';
+      return '<article class="admin-post-card">'+
+        '<div class="admin-post-img">'+cover+'<span class="admin-card-status draft">DRAFT</span></div>'+
+        '<div class="admin-post-info"><div class="admin-post-topline"><span class="admin-post-type">'+(draft.postType==='general'?'GENERAL':'PROJECT')+'</span><span class="admin-post-year">DRAFT</span></div>'+
+        '<div class="admin-post-handle">'+title+'</div><div class="admin-post-location">'+escapeHTML(draft.loc||draft.subtitle||'SpaceMush Studio')+'</div>'+
+        '<div class="admin-post-metrics"><span>▧ '+images.length+' image'+(images.length===1?'':'s')+'</span><span>Saved on this account</span></div></div>'+
+        '<div class="admin-post-actions"><button class="admin-action-btn edit" onclick="openRemoteDraftPost(\''+draft.supabaseId+'\')">Continue editing <span>→</span></button>'+
+        '<button class="admin-icon-action delete" aria-label="Delete draft" title="Delete draft" onclick="deleteRemoteDraft(\''+draft.supabaseId+'\')">⌫</button></div>'+
+        '</article>';
+    }).join('');
+    apg.innerHTML=localDraftCards+remoteDraftCards;
+    monitorMediaAvailability(apg);
+    return;
+  }
+  if(filter==='deleted'){
+    if(!postDraftsLoaded){
+      apg.innerHTML='<div class="admin-posts-empty"><strong>Loading Deleted Posts…</strong></div>';
+      loadPostDrafts().then(renderAdminPosts).catch(function(error){
+        console.error('Deleted draft loading failed:',error);
+        apg.innerHTML='<div class="admin-posts-empty"><strong>Deleted posts could not be loaded</strong><span>'+escapeHTML(error.message||'Local draft storage is unavailable.')+'</span></div>';
+      });
+      return;
+    }
+    var remoteBundledKeys=new Set(deletedRemotePosts.map(function(post){return post.bundledKey;}).filter(Boolean));
+    var remoteDeletedIds=new Set(deletedRemotePosts.map(function(post){return post.supabaseId;}));
+    var deletedEntries=deletedRemotePosts.map(function(post){
+      return {post:post,key:post.supabaseId,bundledKey:post.bundledKey||'',kind:post.postType==='general'?'general':'project'};
+    });
+    Object.keys(POSTS||{}).forEach(function(key){
+      if(!deletedPostKeys.has(key)||permanentlyDeletedPostKeys.has(key)||remoteBundledKeys.has(key)) return;
+      var post=POSTS[key];
+      deletedEntries.push({post:post,key:'',bundledKey:key,kind:post.type==='project'?'project':'general'});
+    });
+    postDrafts.filter(function(draft){
+      return draft.isDeleted&&(!draft.remotePostId||!remoteDeletedIds.has(draft.remotePostId));
+    }).forEach(function(draft){
+      var data=draft.data||{};
+      deletedEntries.push({
+        post:{handle:draft.title,title:draft.title,loc:data.loc||data.generalLabel||'SpaceMush Studio',images:data.images||[]},
+        key:'',bundledKey:'',kind:draft.kind==='general'?'general':'project',
+        localDraftId:draft.id,remotePostId:draft.remotePostId||''
+      });
+    });
+    var matchingDeleted=deletedEntries.filter(function(entry){
+      var post=entry.post;
+      return !search||[post.handle,post.title,post.subtitle,post.loc,post.tag,post.caption].join(' ').toLowerCase().indexOf(search)!==-1;
+    });
+    var deletedCount=el('adminPostCount');
+    if(deletedCount) deletedCount.textContent=matchingDeleted.length+' deleted posts';
+    if(!matchingDeleted.length){
+      apg.innerHTML='<div class="admin-posts-empty"><div class="admin-empty-mark">⌁</div><strong>Trash is empty</strong><span>Deleted posts will appear here so they can be restored or permanently removed.</span></div>';
+      return;
+    }
+    apg.innerHTML=matchingDeleted.map(function(entry){
+      var post=entry.post;
+      var images=post.images||post.project&&post.project.images||((post.slides||[]).filter(function(slide){return slide.type==='image';}).map(function(slide){return slide.src;}));
+      var cover=images.length?'<img class="admin-post-cover" src="'+escapeHTML(images[0])+'" alt="Deleted post cover">':'<span>▧</span>';
+      var label=post.handle||post.title||post.project&&post.project.title||entry.bundledKey;
+      return '<article class="admin-post-card">'+
+        '<div class="admin-post-img">'+cover+'<span class="admin-card-status archived">DELETED</span></div>'+
+        '<div class="admin-post-info"><div class="admin-post-topline"><span class="admin-post-type">'+(entry.kind==='project'?'PROJECT':'GENERAL')+'</span><span class="admin-post-year">TRASH</span></div>'+
+        '<div class="admin-post-handle">'+escapeHTML(label)+'</div>'+
+        '<div class="admin-post-location">'+escapeHTML(post.loc||post.subtitle||post.project&&post.project.location||'SpaceMush Studio')+'</div>'+
+        '<div class="admin-post-metrics"><span>▧ '+images.length+' image'+(images.length===1?'':'s')+'</span><span>Recoverable</span></div></div>'+
+        '<div class="admin-post-actions"><button class="admin-action-btn edit" onclick="'+(entry.localDraftId?'restoreLocalDeletedDraft(\''+entry.localDraftId+'\')':'restoreDeletedPost(\''+entry.key+'\',\''+entry.bundledKey+'\')')+'">Restore post <span>↥</span></button>'+
+        '<button class="admin-icon-action delete" aria-label="Permanently delete post" title="Permanently delete post" onclick="'+(entry.localDraftId?'permanentlyDeleteLocalDraft(\''+entry.localDraftId+'\')':'permanentlyDeletePost(\''+entry.key+'\',\''+entry.bundledKey+'\')')+'">⌫</button></div>'+
+        '</article>';
+    }).join('');
+    monitorMediaAvailability(apg);
     return;
   }
   var existingGeneralPosts=(typeof POSTS!=='undefined'&&POSTS)
@@ -3262,39 +3909,47 @@ function renderAdminPosts(){
       '</div>'+
     '</article>';
   }).join('');
+  monitorMediaAvailability(apg);
 }
 
 async function adminDeleteMush(i){
   var m=mushData[i];
-  if(!confirm('Delete '+m.handle+'? This cannot be undone.')) return;
+  if(!confirm('Move '+m.handle+' to Deleted Posts? You can restore it later.')) return;
   await deleteMush(i,true);
 }
 
 async function adminDeleteRemotePost(postId,label){
-  if(!confirm('Delete '+label+'? This cannot be undone.')) return;
-  if(await runPostLifecycle(postId,'delete')) toast('🗑️ Post and associated stories deleted');
+  if(!confirm('Move '+label+' to Deleted Posts? You can restore it later.')) return;
+  if(await runPostLifecycle(postId,'delete')) toast('🗑️ Post moved to Deleted Posts');
 }
 
 async function adminDeleteGeneralPost(key){
   var post=(typeof POSTS!=='undefined'&&POSTS[key])||generalPosts.find(function(item){return item.key===key;});
   var bundledOverride=generalPosts.find(function(item){return item.bundledKey===key;});
   var label=post&&(post.handle||post.title||post.subtitle)||'this post';
-  if(!confirm('Delete '+label+'? This cannot be undone.')) return;
+  if(!confirm('Move '+label+' to Deleted Posts? You can restore it later.')) return;
   var isBundledPost=!!(typeof POSTS!=='undefined'&&POSTS[key]);
   var remotePost=bundledOverride||post;
   if(remotePost&&remotePost.supabaseId){
     if(!await runPostLifecycle(remotePost.supabaseId,'delete')) return;
-    if(!isBundledPost) return;
+    if(!isBundledPost){
+      toast('🗑️ Post moved to Deleted Posts');
+      return;
+    }
   }
-  if(isBundledPost&&!deletedPostKeys.has(key)){
+  if(isBundledPost&&!(remotePost&&remotePost.supabaseId)&&!deletedPostKeys.has(key)){
     try{ await persistBundledPostDeletion(key); }
     catch(error){
       console.error('Bundled carousel deletion failed:',error);
-      toast('Could not delete this carousel. Nothing was changed.');
+      toast(supabaseSchemaErrorMessage(error)||'Could not delete this carousel. Nothing was changed.');
       return;
     }
   }
   if(isBundledPost) deletedPostKeys.add(key);
+  if(hasSupabase()&&adminLoggedIn){
+    try{ await loadSupabaseContent(); await loadDeletedRemotePosts(); }
+    catch(error){ console.error('Could not refresh deleted post state:',error); toast('Post was deleted, but the trash list could not be refreshed.'); }
+  }
   generalPosts=generalPosts.filter(function(item){return item.key!==key&&item.bundledKey!==key;});
   renderFeed();
   renderStories();
@@ -3302,6 +3957,40 @@ async function adminDeleteGeneralPost(key){
   renderAdminDashboard();
   populateFeedPositionOptions();
   toast('🗑️ '+label+' deleted');
+}
+
+async function restoreDeletedPost(postId,bundledKey){
+  if(bundledKey&&permanentlyDeletedPostKeys.has(bundledKey)){
+    toast('This post was permanently deleted and cannot be restored.');
+    return;
+  }
+  if(postId&&!await runPostLifecycle(postId,'restore')) return;
+  try{
+    if(bundledKey&&!postId) await persistBundledPostState(bundledKey,false,false,archivedPostKeys.has(bundledKey));
+    if(hasSupabase()) await loadSupabaseContent();
+    await loadArchivedRemotePosts();
+    await loadDeletedRemotePosts();
+    renderFeed(); renderStories(); renderProjectsGrid(); renderAdminPosts(); renderAdminDashboard();
+    toast('↥ Post restored');
+  }catch(error){
+    console.error('Post restore failed:',error);
+    toast('Could not restore post: '+(error.message||'check your connection and admin access.'));
+  }
+}
+
+async function permanentlyDeletePost(postId,bundledKey){
+  if(!confirm('Permanently delete this post? This cannot be undone.')) return;
+  if(postId&&!await runPostLifecycle(postId,'permanent_delete')) return;
+  try{
+    if(bundledKey&&!postId) await persistBundledPostState(bundledKey,true,true,archivedPostKeys.has(bundledKey));
+    if(hasSupabase()) await loadSupabaseContent();
+    await loadDeletedRemotePosts();
+    renderFeed(); renderStories(); renderProjectsGrid(); renderAdminPosts(); renderAdminDashboard();
+    toast('Post permanently deleted.');
+  }catch(error){
+    console.error('Permanent post deletion failed:',error);
+    toast('Could not permanently delete post: '+(error.message||'check your connection and admin access.'));
+  }
 }
 
 async function adminToggleArchive(key){
@@ -3317,6 +4006,8 @@ async function adminToggleArchive(key){
         if(action==='archive') archivedPostKeys.add(project.bundledKey);
         else archivedPostKeys.delete(project.bundledKey);
         renderFeed();
+        renderStories();
+        renderProjectsGrid();
         renderAdminPosts();
         populateFeedPositionOptions();
       }
@@ -3325,13 +4016,31 @@ async function adminToggleArchive(key){
     return;
   }
   if(archivedPostKeys.has(key)){
+    if(POSTS&&POSTS[key]){
+      try{ await persistBundledPostState(key,deletedPostKeys.has(key),permanentlyDeletedPostKeys.has(key),false); }
+      catch(error){
+        console.error('Bundled post unarchive failed:',error);
+        toast('Could not restore post: '+(error.message||'check your connection and admin access.'));
+        return;
+      }
+    }
     archivedPostKeys.delete(key);
     toast('↥ Post restored to the live feed');
   }else{
+    if(POSTS&&POSTS[key]){
+      try{ await persistBundledPostState(key,deletedPostKeys.has(key),permanentlyDeletedPostKeys.has(key),true); }
+      catch(error){
+        console.error('Bundled post archive failed:',error);
+        toast('Could not archive post: '+(error.message||'check your connection and admin access.'));
+        return;
+      }
+    }
     archivedPostKeys.add(key);
     toast('▱ Post archived');
   }
   renderFeed();
+  renderStories();
+  renderProjectsGrid();
   renderAdminPosts();
   renderAdminDashboard();
   populateFeedPositionOptions();

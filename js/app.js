@@ -286,6 +286,24 @@ function dbPostToGeneral(row){
   setGeneralInfoSlides(key,slides,post.handle);
   return post;
 }
+function applyVirtualTourCaptionOverride(row){
+  var key=String(row.slug||'').slice('bundled-'.length);
+  var tour=VIRTUAL_TOUR_POSTS&&VIRTUAL_TOUR_POSTS[key];
+  if(!tour||row.post_type!=='virtualTour') return;
+  var post=POSTS&&POSTS[key];
+  if(!post||post.type!=='virtualTour') return;
+  if(row.caption!==null&&row.caption!==undefined) post.caption=String(row.caption);
+  post.supabaseId=row.id;
+}
+function resetVirtualTourCaptions(){
+  Object.keys(VIRTUAL_TOUR_POSTS||{}).forEach(function(key){
+    var tour=POSTS&&POSTS[key];
+    if(tour){
+      tour.caption=VIRTUAL_TOUR_POSTS[key].caption;
+      delete tour.supabaseId;
+    }
+  });
+}
 function applyBundledGeneralOverride(row){
   var key=String(row.slug||'').slice('bundled-'.length);
   var bundled=POSTS&&POSTS[key];
@@ -394,9 +412,11 @@ function applyBundledProjectOverride(row){
 function applyRemotePost(row){
   if(row.slug&&row.slug.indexOf('bundled-')===0){
     if(row.post_type==='project') applyBundledProjectOverride(row);
+    else if(row.post_type==='virtualTour') applyVirtualTourCaptionOverride(row);
     else applyBundledGeneralOverride(row);
     return;
   }
+  if(row.post_type==='virtualTour') return;
   if(row.post_type==='general'){
     var general=dbPostToGeneral(row);
     var generalIndex=generalPosts.findIndex(function(post){return post.supabaseId===row.id;});
@@ -463,6 +483,7 @@ async function loadSupabaseContent(){
     generalPosts=generalPosts.filter(function(post){return !post.supabaseId;});
     resetBundledProjectOverrides();
     bundledGeneralOverrides.clear();
+    resetVirtualTourCaptions();
     (posts.data||[]).forEach(applyRemotePost);
     var stories=await supabaseClient.from('stories').select('*').eq('published',true).eq('is_archived',false).gt('expires_at',new Date().toISOString());
     if(!stories.error) (stories.data||[]).forEach(function(s){
@@ -717,6 +738,75 @@ async function persistGeneralPost(post,bundledKey){
   post.supabaseId=created.data.id;
   post.runtimeKey='supabase-'+created.data.id;
   post.createdAt=created.data.created_at||new Date().toISOString();
+}
+async function persistVirtualTourCaption(key,caption){
+  var tour=VIRTUAL_TOUR_POSTS&&VIRTUAL_TOUR_POSTS[key];
+  var post=POSTS&&POSTS[key];
+  if(!tour||!post||post.type!=='virtualTour') throw new Error('This virtual-tour post is not available.');
+  if(!hasSupabase()||!adminLoggedIn) throw new Error('A signed-in administrator and Supabase connection are required to save captions.');
+  var auth=await supabaseClient.auth.getUser();
+  if(auth.error) throw auth.error;
+  var user=auth.data&&auth.data.user;
+  if(!user) throw new Error('No signed-in administrator');
+  var slug='bundled-'+key;
+  var existing=await supabaseClient.from('posts').select('id,post_type').eq('slug',slug).maybeSingle();
+  if(existing.error) throw existing.error;
+  if(existing.data){
+    if(existing.data.post_type!=='virtualTour') throw new Error('The saved post has an unexpected type. No changes were made.');
+    var updated=await supabaseClient.from('posts').update({caption:caption}).eq('id',existing.data.id);
+    if(updated.error) throw updated.error;
+    post.supabaseId=existing.data.id;
+  }else{
+    var created=await supabaseClient.from('posts').insert({
+      slug:slug,
+      title:tour.title,
+      handle:post.author.name,
+      subtitle:post.subtitle,
+      caption:caption,
+      location:tour.projectKey,
+      category:'360-virtual-tour',
+      post_type:'virtualTour',
+      content:{
+        type:tour.type,
+        key:tour.key,
+        title:tour.title,
+        projectId:tour.projectId,
+        projectKey:tour.projectKey,
+        projectHandle:tour.projectHandle||null,
+        coverImage:tour.coverImage,
+        embedUrl:tour.embedUrl,
+        buttonText:tour.buttonText
+      },
+      published:true,
+      published_at:new Date().toISOString(),
+      created_by:user.id
+    }).select('id').single();
+    if(created.error) throw created.error;
+    post.supabaseId=created.data.id;
+  }
+}
+async function saveVirtualTourCaption(key){
+  var tour=VIRTUAL_TOUR_POSTS&&VIRTUAL_TOUR_POSTS[key];
+  var post=POSTS&&POSTS[key];
+  var field=el('virtual-tour-caption-'+key);
+  if(!tour||!post||post.type!=='virtualTour'||!field){
+    toast('Could not find this virtual-tour caption editor.');
+    return;
+  }
+  var card=field.closest('.virtual-tour-admin-card');
+  var button=card&&card.querySelector('.virtual-tour-admin-actions button');
+  if(button) button.disabled=true;
+  try{
+    await persistVirtualTourCaption(key,field.value);
+    post.caption=field.value;
+    renderFeed();
+    renderAdminPosts();
+    toast('Virtual-tour caption saved.');
+  }catch(error){
+    console.error('Virtual-tour caption save failed:',error);
+    toast('Could not save caption: '+(error.message||'check your connection and admin access.'));
+    if(button) button.disabled=false;
+  }
 }
 async function persistDraftPost(draft){
   if(!hasSupabase()||!adminLoggedIn) return;
@@ -1250,7 +1340,43 @@ function renderFeed(){
     return key&&!archivedPostKeys.has(key)&&!(post.bundledKey&&deletedPostKeys.has(post.bundledKey));
   }).map(function(post){return post.runtimeKey||post.key;}));
   var renderedRuntimePosts=new Set();
+  var renderedVirtualTours=new Set();
   var renderingRuntimePosts=new Set();
+  function virtualTourMatchesProject(tour,projectPost,feedKey){
+    var project=projectPost&&projectPost.project||projectPost||{};
+    var projectIds=[project.id,project.project&&project.project.id];
+    return tour.projectKey===feedKey||
+      tour.projectKey===projectPost.bundledKey||
+      (tour.projectId!==null&&tour.projectId!==undefined&&projectIds.some(function(id){return String(tour.projectId)===String(id);}))||
+      (!!tour.projectHandle&&tour.projectHandle===project.handle);
+  }
+  function virtualTourProjectIsVisible(tour){
+    var staticProject=POSTS&&POSTS[tour.projectKey];
+    if(staticProject&&staticProject.type==='project'&&activeStaticAnchors.has(tour.projectKey)) return true;
+    return runtimePosts.some(function(projectPost){
+      var key=projectPost.runtimeKey||projectPost.key;
+      return projectPost.type==='project'&&key&&activeRuntimeAnchors.has(key)&&
+        virtualTourMatchesProject(tour,projectPost,key);
+    });
+  }
+  function addVirtualTours(predicate){
+    Object.keys(VIRTUAL_TOUR_POSTS||{}).forEach(function(key){
+      var tour=VIRTUAL_TOUR_POSTS[key];
+      if(renderedVirtualTours.has(key)||!predicate(tour,key)) return;
+      var post=POSTS&&POSTS[key];
+      if(!post||deletedPostKeys.has(key)||archivedPostKeys.has(key)) return;
+      renderedVirtualTours.add(key);
+      parts.push(buildUniversalPostCard(post,key,parts.length));
+    });
+  }
+  function addToursForProject(projectKey,projectPost){
+    addVirtualTours(function(tour){return virtualTourMatchesProject(tour,projectPost,projectKey);});
+  }
+  function addUnpairedToursAfter(anchorKey){
+    addVirtualTours(function(tour){
+      return !virtualTourProjectIsVisible(tour)&&tour.fallbackAfter===anchorKey;
+    });
+  }
   function addRuntimePosts(position){
     runtimePosts.filter(function(post){
       var key=post.runtimeKey||post.key;
@@ -1269,6 +1395,7 @@ function renderFeed(){
       renderedRuntimePosts.add(key);
       var index=runtimePosts.indexOf(post);
       parts.push(buildUniversalPostCard(post,key||('runtime-post-'+index),parts.length));
+      if(post.type==='project') addToursForProject(key,post);
     });
   }
   addRuntimePosts('top');
@@ -1278,12 +1405,15 @@ function renderFeed(){
       addRuntimePosts(key);
       const post=(typeof POSTS!=='undefined' && POSTS) ? POSTS[key] : null;
       if(post&&!bundledProjectOverrides.has(key)&&!bundledGeneralOverrides.has(key)&&!deletedPostKeys.has(key)&&!archivedPostKeys.has(key)) parts.push(buildUniversalPostCard(post,key,position));
+      if(post&&post.type==='project'&&activeStaticAnchors.has(key)) addToursForProject(key,post);
+      addUnpairedToursAfter(key);
     }catch(err){
       console.error('SpaceMush feed post '+position+' failed:',err);
       // Keep the rest of the feed usable if one post contains bad data.
       parts.push(`<article class="mush-card sr"><div class="post-header"><div class="post-avatar-ring"><div class="post-avatar"><span class="post-avatar-label">SM</span></div></div><div class="post-info"><div class="post-handle">SpaceMush Architects</div><div class="post-subloc">Chennai</div></div></div><div class="post-image-wrap"><div class="info-carousel-wrap" style="display:flex;align-items:center;justify-content:center;padding:40px;text-align:center"><div><div class="info-slide-heading">SpaceMush Architects</div><div class="info-slide-body"><p>Small Spaces Deserve Design.</p></div></div></div></div></article>`);
     }
   });
+  addVirtualTours(function(tour){return !renderedVirtualTours.has(tour.key);});
   addRuntimePosts('bottom');
   c.innerHTML=parts.join('');
   c.dataset.rendered='true';
@@ -1319,6 +1449,7 @@ function monitorMediaAvailability(root){
 }
 
 function buildUniversalPostCard(post,key,position){
+  if(post.type==='virtualTour') return renderVirtualTourPost(post,key);
   const isProject=post.type==='project';
   const projectIndex=isProject
     ? mushData.findIndex(project=>String(project.id)===String(post.project.id))
@@ -1363,6 +1494,23 @@ function buildUniversalPostCard(post,key,position){
     <div class="post-caption">${caption}${isProject?`<span class="show-more" onclick="openProject(${projectIndex})"> more</span>`:''}</div>
     ${metadata}
   </article>`;
+}
+
+function renderVirtualTourPost(post,key){
+  var title=escapeHTML(post.title||'360° Virtual Tour');
+  var cover=post.coverImage
+    ? '<img class="virtual-tour-cover-image" src="'+escapeHTML(post.coverImage)+'" alt="'+title+' project cover" loading="lazy">'
+    : '<div class="virtual-tour-cover-placeholder" role="img" aria-label="'+title+' project cover image not yet available"><span>Project cover image</span></div>';
+  return '<article class="mush-card sr virtual-tour-post" data-post-id="'+escapeHTML(key)+'">'+
+    '<div class="post-header">'+
+      '<div class="post-avatar-ring"><div class="post-avatar"><span class="post-avatar-label">SM</span></div></div>'+
+      '<div class="post-info"><div class="post-handle">'+title+'<div class="verified-badge"><svg viewBox="0 0 10 10"><polyline points="2,5 4,7 8,3" stroke="white" stroke-width="1.5" fill="none"/></svg></div></div>'+
+      '<div class="post-subloc">360° Virtual Tour</div></div>'+
+    '</div>'+
+    '<div class="virtual-tour-cover">'+cover+'</div>'+
+    '<div class="virtual-tour-viewer-controls"><a class="virtual-tour-enter" href="'+escapeHTML(post.embedUrl)+'" target="_blank" rel="noopener noreferrer">'+escapeHTML(post.buttonText)+'</a></div>'+
+    '<div class="post-caption virtual-tour-caption">'+escapeHTML(post.caption||'')+'</div>'+
+    '</article>';
 }
 
 function togglePostKindFields(){
@@ -3853,7 +4001,10 @@ function renderAdminPosts(){
     return;
   }
   var existingGeneralPosts=(typeof POSTS!=='undefined'&&POSTS)
-    ? Object.keys(POSTS).map(function(key){return {post:POSTS[key],key:key,kind:'general-existing'};}).filter(function(entry){return entry.post.type!=='project'&&!deletedPostKeys.has(entry.key);})
+    ? Object.keys(POSTS).map(function(key){return {post:POSTS[key],key:key,kind:'general-existing'};}).filter(function(entry){return entry.post.type!=='project'&&entry.post.type!=='virtualTour'&&!deletedPostKeys.has(entry.key);})
+    : [];
+  var existingVirtualTourPosts=(typeof POSTS!=='undefined'&&POSTS)
+    ? Object.keys(VIRTUAL_TOUR_POSTS||{}).map(function(key){return {post:POSTS[key],key:key,kind:'virtualTour'};}).filter(function(entry){return !!entry.post&&!deletedPostKeys.has(entry.key);})
     : [];
   var standaloneGeneralPosts=generalPosts.filter(function(post){return !post.bundledKey||!POSTS[post.bundledKey];});
   var visiblePosts=mushData.map(function(post,index){
@@ -3862,6 +4013,7 @@ function renderAdminPosts(){
   })
     .concat(archivedRemotePosts.map(function(post){return {post:post,index:-1,kind:post.postType==='general'?'general':'project',key:post.supabaseId||post.runtimeKey};}))
     .concat(existingGeneralPosts)
+    .concat(existingVirtualTourPosts)
     .concat(standaloneGeneralPosts.map(function(post){return {post:post,key:post.key,kind:'general'};}))
     .filter(function(entry){
     var post=entry.post;
@@ -3874,11 +4026,12 @@ function renderAdminPosts(){
     if(filter==='story'&&!post.hasStory) return false;
     if(filter==='residential'&&post.category!=='residential') return false;
     if(filter==='commercial'&&post.category!=='commercial') return false;
+    if(filter==='virtualTours'&&entry.kind!=='virtualTour') return false;
     return true;
   });
   if(filter==='recent') visiblePosts.reverse();
   var count=el('adminPostCount');
-  var totalPosts=mushData.length+archivedRemotePosts.length+existingGeneralPosts.length+standaloneGeneralPosts.length;
+  var totalPosts=mushData.length+archivedRemotePosts.length+existingGeneralPosts.length+existingVirtualTourPosts.length+standaloneGeneralPosts.length;
   if(count) count.textContent=visiblePosts.length+' of '+totalPosts+' posts';
   if(!visiblePosts.length){
     apg.innerHTML='<div class="admin-posts-empty"><div class="admin-empty-mark">⌁</div><strong>No posts found</strong><span>Try a different search or create something new.</span></div>';
@@ -3886,6 +4039,24 @@ function renderAdminPosts(){
   }
   apg.innerHTML=visiblePosts.map(function(entry){
     var post=entry.post;
+    if(entry.kind==='virtualTour'){
+      var tourKey=entry.key;
+      var coverPreview=post.coverImage
+        ? '<img class="admin-post-cover" src="'+escapeHTML(post.coverImage)+'" alt="'+escapeHTML(post.title)+' project cover" loading="lazy">'
+        : '<div class="virtual-tour-admin-placeholder">Project cover image<br>not yet available</div>';
+      return '<article class="admin-post-card virtual-tour-admin-card">'+
+        '<div class="admin-post-img">'+coverPreview+'</div>'+
+        '<div class="admin-post-info">'+
+          '<div class="admin-post-topline"><span class="admin-post-type virtual-tour-admin-type">360° Virtual Tour</span></div>'+
+          '<div class="admin-post-handle">'+escapeHTML(post.title)+'</div>'+
+          '<label class="virtual-tour-caption-label" for="virtual-tour-caption-'+escapeHTML(tourKey)+'">Caption</label>'+
+          '<textarea class="virtual-tour-caption-input" id="virtual-tour-caption-'+escapeHTML(tourKey)+'" rows="4">'+escapeHTML(post.caption||'')+'</textarea>'+
+          '<div class="virtual-tour-url-label">Fixed viewer URL</div>'+
+          '<code class="virtual-tour-admin-url">'+escapeHTML(post.embedUrl)+'</code>'+
+        '</div>'+
+        '<div class="admin-post-actions virtual-tour-admin-actions"><button class="admin-primary-btn" type="button" onclick="saveVirtualTourCaption(\''+escapeHTML(tourKey)+'\')">Save caption</button></div>'+
+        '</article>';
+    }
     var index=entry.index;
     var images=post.images||((post.slides||[]).filter(function(slide){return slide.type==='image';}).map(function(slide){return slide.src;}));
     var cover=images.length?images[0]:'';
@@ -3903,7 +4074,7 @@ function renderAdminPosts(){
       '</div>'+
       '<div class="admin-post-actions">'+
         (entry.kind==='project'&&index>=0?'<button class="admin-action-btn edit" onclick="openEditPost('+index+')">Edit post <span>→</span></button>':'')+
-        (entry.kind!=='project'&&index!==-1?'<button class="admin-action-btn edit" onclick="openEditGeneralPost(\''+entryKey+'\')">Edit post <span>→</span></button>':'')+
+        (entry.kind!=='project'&&entry.kind!=='virtualTour'&&index!==-1?'<button class="admin-action-btn edit" onclick="openEditGeneralPost(\''+entryKey+'\')">Edit post <span>→</span></button>':'')+
         '<button class="admin-icon-action archive" '+(pending?'disabled':'')+' aria-label="'+(archived?'Unarchive':'Archive')+' post" title="'+(pending?'Working…':(archived?'Unarchive':'Archive')+' post')+'" onclick="adminToggleArchive(\''+entryKey+'\')">'+(archived?'↥':'▱')+'</button>'+
         (entry.kind==='project'?(index>=0?'<button class="admin-icon-action delete" '+(pending?'disabled':'')+' aria-label="Delete post" title="'+(pending?'Working…':'Delete post')+'" onclick="adminDeleteMush('+index+')">⌫</button>':(lifecycleId?'<button class="admin-icon-action delete" '+(pending?'disabled':'')+' aria-label="Delete post" title="'+(pending?'Working…':'Delete post')+'" onclick="adminDeleteRemotePost(\''+lifecycleId+'\',\''+(post.handle||post.title||'this post').replace(/'/g,"\\'")+'\')">⌫</button>':'')):'<button class="admin-icon-action delete" '+(pending?'disabled':'')+' aria-label="Delete post" title="'+(pending?'Working…':'Delete post')+'" onclick="adminDeleteGeneralPost(\''+entryKey+'\')">⌫</button>')+
       '</div>'+

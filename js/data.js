@@ -1,7 +1,7 @@
 // ============================================================
 // SPACEMUSH WEBSITE — CONTENT DATA
 // ============================================================
-// Edit normal public content in POSTS below.
+// Edit normal public content in CONTENT_POSTS and virtual tours below.
 // Every public feed item is a post — including projects.
 // FEED_CONFIG controls the order of those posts.
 // Do not edit app.js or style.css for normal content changes.
@@ -496,10 +496,38 @@ const CONTENT_POSTS = {
   }
 };
 
-// One canonical content model. Edit CONTENT_POSTS only through the POSTS
-// records below; the two derived indexes exist for the existing studio and
-// project-detail workflows and never own public content.
-const POSTS = Object.fromEntries(
+// Fixed virtual-tour configuration lives here; only caption is editable in Studio.
+const VIRTUAL_TOUR_POSTS = {
+  annaNagar360: {
+    type: 'virtualTour',
+    key: 'annaNagar360',
+    title: 'Anna Nagar Residence 360°',
+    projectId: '001',
+    projectKey: 'anna-nagar',
+    projectHandle: 'Mush_05_AnnaNagar',
+    coverImage: 'images/posts/anna-nagar/02.jpg',
+    embedUrl: 'https://virtual.twelvespacestudio.com/360/PRO_26/12SS006/A/SPACEMUSH/',
+    buttonText: 'Enter 360° View',
+    caption: 'Step inside Anna Nagar Residence. Explore the spaces, details and design from every angle.'
+  },
+  alwarthirunagar360: {
+    type: 'virtualTour',
+    key: 'alwarthirunagar360',
+    title: 'Alwarthirunagar Residence 360°',
+    projectId: 'e85cd54c-2dd7-4ebf-8e07-2a4b2b5c7a9e',
+    projectKey: 'alwarthirunagar',
+    projectHandle: 'Mush_020_Alwarthirunagar',
+    fallbackAfter: 'nathans-home',
+    coverImage: 'images/posts/alwarthirunagar/360-cover.png',
+    embedUrl: 'https://virtual.twelvespacestudio.com/360/PRO_26/12SS006/B/SPACEMUSH_2/',
+    buttonText: 'Enter 360° View',
+    caption: 'Step inside Alwarthirunagar Residence. Explore the design and details in 360°.'
+  }
+};
+
+// POSTS is the derived public feed model. CONTENT_POSTS and
+// VIRTUAL_TOUR_POSTS remain the editable source records.
+const POSTS = Object.assign(Object.fromEntries(
   Object.entries(CONTENT_POSTS).map(([key, post]) => {
     const isProject = post.postType === 'project';
     const project = isProject ? {
@@ -559,7 +587,13 @@ const POSTS = Object.fromEntries(
       project
     }];
   })
-);
+), Object.fromEntries(Object.entries(VIRTUAL_TOUR_POSTS).map(([key, post]) => [key, {
+  ...post,
+  id: key,
+  author: { name: 'spacemush_architects_chennai', avatar: 'SM' },
+  subtitle: '360° Virtual Tour',
+  slides: []
+}])));
 
 const PROJECT_STYLES = {
   'anna-nagar': ['Modern', 'Contemporary', 'Traditional'],
@@ -582,7 +616,8 @@ const mushData = Object.values(POSTS)
     postType: 'project'
   }));
 
-// Public feed order. Every item below is simply a POST key.
+// Public feed order for normal posts. Virtual tours are inserted from their
+// project relationship, or their configured fallback position, below.
 const FEED_CONFIG = [
   'where-it-all-begins',
   'la-perle',

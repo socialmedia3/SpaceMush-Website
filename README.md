@@ -288,14 +288,20 @@ No code change is needed if the filename stays the same.
 1. Where It All Begins
 2. La Perle
 3. Who is SSR?
-4. Anna Nagar
-5. How We Design
-6. Nathan's Home
-7. Who We Are
-8. How to Find Us
-9. Contact SpaceMush
-10. FAQ
+4. What We Do
+5. Anna Nagar Residence
+6. Anna Nagar Residence 360° (directly after its project)
+7. How We Design
+8. Nathan's Home
+9. Who We Are
+10. How to Find Us
+11. Contact SpaceMush
+12. FAQ
 ```
+
+The Alwarthirunagar Residence 360° post follows its project automatically
+when that project is available; otherwise, it uses its `fallbackAfter`
+position in `VIRTUAL_TOUR_POSTS`.
 
 The first post is intentionally labelled **WHERE IT ALL BEGINS** instead of `WELCOME`.
 
@@ -315,6 +321,35 @@ The navigation reflows without leaving an empty Search slot.
 The public feed no longer shows `0 comments` / `View all 0 comments` placeholders.
 
 Additional spacing has been added around captions and post labels so the text does not feel crowded between posts.
+
+### 360° Virtual Tour Posts
+
+Virtual tours are a distinct `virtualTour` post type configured in
+`js/data.js` under `VIRTUAL_TOUR_POSTS`. Each entry has fixed project metadata:
+
+- Project cover image path (`coverImage`)
+- Twelve Space Studio viewer URL (`embedUrl`)
+- `Enter 360° View` button text and behavior
+- Project relationship (`projectKey` and `projectId`)
+
+The public feed renders the tour directly after its related project when that
+project exists in the feed. If the project is not available yet, `fallbackAfter`
+controls where the tour appears until the related project is added. Viewer
+iframes are activated only after a visitor presses the button; a direct-link
+fallback remains available if embedding is unavailable.
+
+To add another tour, add one entry to `VIRTUAL_TOUR_POSTS` with a unique key,
+`type: 'virtualTour'`, title, project relationship, cover image path, fixed
+viewer URL, button text, and default caption. Use `null` for `coverImage` until
+an appropriate project image exists; do not generate or substitute an image.
+Set `projectKey` to the matching project key so the feed can place it below
+that project. Set `fallbackAfter` for the temporary position if that project
+does not exist yet. The centered `Enter 360° View` link opens the fixed viewer
+URL directly in a new tab; the tour is not embedded in the feed.
+
+The dashboard intentionally allows only the caption to be edited for 360° Virtual Tour posts. The project image, viewer URL, button and post configuration are locked.
+Caption changes are saved through the existing Supabase posts table and require
+a signed-in administrator.
 
 # What you normally should NOT edit
 

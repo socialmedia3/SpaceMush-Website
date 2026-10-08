@@ -111,9 +111,9 @@ input, select, textarea { font-family:inherit; outline:none; }
 [data-theme="dark"] #splashScreen { background:#000; }
 [data-theme="dark"] .splash-tagline { color:#999; }
 
-/* ── FLOATING WHATSAPP BUTTON (always visible, top-right) ── */
+/* ── FLOATING WHATSAPP BUTTON (always visible, bottom-right) ── */
 .floating-whatsapp-btn {
-  position:fixed; top:16px; right:16px; z-index:500;
+  position:fixed; top:auto; right:16px; bottom:20px; z-index:500;
   display:inline-flex; align-items:center; justify-content:center; gap:8px;
   background:#25D366; color:#fff;
   height:44px; padding:0 18px 0 14px; border-radius:22px;
@@ -126,12 +126,12 @@ input, select, textarea { font-family:inherit; outline:none; }
 .floating-whatsapp-btn svg { width:22px; height:22px; flex-shrink:0; display:block; }
 .floating-whatsapp-label { white-space:nowrap; line-height:1; }
 @media (max-width: 640px) {
-  .floating-whatsapp-btn { top:12px; right:12px; height:42px; min-width:132px; width:auto; padding:0 14px 0 11px; border-radius:21px; gap:7px; font-size:12px; }
+  .floating-whatsapp-btn { top:auto; right:12px; bottom:calc(74px + env(safe-area-inset-bottom, 0px)); height:42px; min-width:132px; width:auto; padding:0 14px 0 11px; border-radius:21px; gap:7px; font-size:12px; }
   .floating-whatsapp-label { display:inline; white-space:nowrap; }
   .floating-whatsapp-btn svg { width:20px; height:20px; }
 }
 @media (max-width:380px) {
-  .floating-whatsapp-btn { top:10px; right:10px; min-width:124px; height:40px; padding:0 11px 0 9px; font-size:11.5px; }
+  .floating-whatsapp-btn { right:10px; min-width:124px; height:40px; padding:0 11px 0 9px; font-size:11.5px; }
   .floating-whatsapp-btn svg { width:19px; height:19px; }
 }
 
